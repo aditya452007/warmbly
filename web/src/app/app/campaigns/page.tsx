@@ -37,6 +37,7 @@ import {
     RefreshCcwIcon,
     SendIcon,
     Settings2Icon,
+    SparklesIcon,
 } from "lucide-react";
 import {
     EmptyBlock,
@@ -346,6 +347,13 @@ export default function CampaignsPage() {
                     onClick={() => p.setFoldersEdit(true)}
                 >
                     Folders
+                </TopbarAction>
+                <TopbarAction
+                    variant="ghost"
+                    icon={<SparklesIcon className="w-3 h-3" />}
+                    href="/app/campaigns/ai"
+                >
+                    AI campaign
                 </TopbarAction>
                 <TopbarAction
                     icon={<PlusIcon className="w-3 h-3" />}

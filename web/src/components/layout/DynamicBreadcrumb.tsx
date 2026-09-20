@@ -8,6 +8,7 @@ const labelMap: Record<string, string> = {
   segments: 'Segments',
   categories: 'Categories',
   campaigns: 'Campaigns',
+  ai: 'AI Campaign',
   unibox: 'Inbox',
   analytics: 'Analytics',
   crm: 'CRM',

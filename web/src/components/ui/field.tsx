@@ -30,6 +30,7 @@ export function TextInput({
     invalid,
     title,
     maxLength,
+    describedBy,
 }: {
     value: string;
     onChange: (v: string) => void;
@@ -52,6 +53,8 @@ export function TextInput({
     // Caps the value in the field itself, for the cases where the server has a
     // hard limit and silently truncating or failing the save would be worse.
     maxLength?: number;
+    // Id of a nearby error/hint element, rendered as aria-describedby.
+    describedBy?: string;
 }) {
     return (
         <input
@@ -66,6 +69,7 @@ export function TextInput({
             onKeyDown={onKeyDown}
             onBlur={onBlur}
             aria-invalid={invalid || undefined}
+            aria-describedby={describedBy}
             title={title}
             className={cn(
                 base,
@@ -165,6 +169,7 @@ export function NumberInput({
     suffix,
     align = "left",
     className,
+    describedBy,
 }: {
     value: number;
     onChange: (value: number) => void;
@@ -182,6 +187,8 @@ export function NumberInput({
     suffix?: React.ReactNode;
     align?: "left" | "right" | "center";
     className?: string;
+    // Id of a nearby error/hint element, rendered as aria-describedby.
+    describedBy?: string;
 }) {
     const clamp = (n: number) => {
         if (Number.isNaN(n)) return min ?? 0;
@@ -212,6 +219,7 @@ export function NumberInput({
                 value={Number.isFinite(value) ? value : ""}
                 disabled={disabled}
                 placeholder={placeholder}
+                aria-describedby={describedBy}
                 onChange={(e) => {
                     const raw = e.target.value;
                     onChange(raw === "" ? min ?? 0 : clamp(Number(raw)));
