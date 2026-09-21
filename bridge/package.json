@@ -1,0 +1,38 @@
+{
+  "name": "warmbly-opencode-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local AI orchestration bridge between Warmbly and OpenCode. Prepares leads, research, personalized copy and rendered campaign steps. Never sends email.",
+  "scripts": {
+    "dev": "tsx --watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "doctor": "node dist/cli.js doctor"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "@opencode-ai/sdk": "1.18.26",
+    "@react-email/components": "1.0.12",
+    "better-sqlite3": "13.0.3",
+    "hono": "4.13.8",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "react-email": "6.9.5",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.13.5",
+    "@types/react": "19.1.1",
+    "@vitejs/plugin-react": "5.0.4",
+    "tsx": "4.20.3",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
