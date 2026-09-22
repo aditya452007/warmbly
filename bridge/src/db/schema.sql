@@ -128,6 +128,106 @@ CREATE TABLE IF NOT EXISTS sends (
 );
 CREATE INDEX IF NOT EXISTS idx_sends_draft ON sends(draft_id);
 
+-- Phase 8 bulk campaign sending. One queue per bridge campaign run owns the
+-- bounded, paced delivery of its APPROVED drafts. Queue rows survive restart;
+-- unfinished items resume from persisted state, never from memory.
+CREATE TABLE IF NOT EXISTS send_queues (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES campaign_runs(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  daily_limit INTEGER NOT NULL DEFAULT 50,
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  concurrency INTEGER NOT NULL DEFAULT 1,
+  -- Campaign-level sending authorization, attested once by the operator at
+  -- start. Per-send consent is satisfied by a subscribed contact OR this
+  -- attestation; the contact's subscribed flag is never flipped silently.
+  consent_attested INTEGER NOT NULL DEFAULT 0,
+  followup_enabled INTEGER NOT NULL DEFAULT 1,
+  followup_days TEXT NOT NULL DEFAULT '[3,7,12]',
+  -- Least surprise: AI follow-ups need a human approval before they may send.
+  -- An explicit campaign-level opt-out auto-approves on generation instead.
+  followup_require_approval INTEGER NOT NULL DEFAULT 1,
+  -- Lifetime live-send cap for this queue. Fail-closed bulk safety.
+  max_live_sends INTEGER NOT NULL DEFAULT 3,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- One queue item per (draft version, kind). kind is 'initial' or
+-- 'followup:<seq>'. The idempotency key is the stable send identity across
+-- restarts and workers: draft + version + recipient + campaign run + kind.
+CREATE TABLE IF NOT EXISTS send_items (
+  id TEXT PRIMARY KEY,
+  queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
+  draft_id TEXT NOT NULL REFERENCES outreach_drafts(id) ON DELETE CASCADE,
+  draft_version INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'initial',
+  seq INTEGER NOT NULL DEFAULT 0,
+  followup_id TEXT REFERENCES followup_drafts(id) ON DELETE SET NULL,
+  recipient TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  -- Due date for pacing/follow-ups. NULL means due immediately.
+  scheduled_for TEXT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  provider TEXT NOT NULL DEFAULT '',
+  provider_message_id TEXT,
+  in_reply_to TEXT,
+  consent_source TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  sent_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (queue_id, draft_id, draft_version, kind, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_send_items_queue_status ON send_items(queue_id, status);
+CREATE INDEX IF NOT EXISTS idx_send_items_due ON send_items(queue_id, status, scheduled_for, next_attempt_at);
+
+-- AI-generated follow-up copy. Plain text only: React Email owns
+-- presentation, offer URLs are inserted by the template layer, never by AI.
+CREATE TABLE IF NOT EXISTS followup_drafts (
+  id TEXT PRIMARY KEY,
+  queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
+  lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  parent_draft_id TEXT NOT NULL REFERENCES outreach_drafts(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  rendered_html TEXT,
+  status TEXT NOT NULL DEFAULT 'NEEDS_REVIEW',
+  version INTEGER NOT NULL DEFAULT 1,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (queue_id, lead_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_followups_queue ON followup_drafts(queue_id, status);
+
+-- Persisted per-day send counters. Restart-safe daily pacing: the count is
+-- incremented in the same step that stamps SENT, never recomputed from rows.
+CREATE TABLE IF NOT EXISTS send_day_counters (
+  queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (queue_id, day)
+);
+
+-- Local signals that stop future sends: replies, unsubscribes, complaints.
+-- Written by inbound-sync hooks, manual operator marks, and tests. A present
+-- 'replied' row halts the whole follow-up chain for that lead.
+CREATE TABLE IF NOT EXISTS contact_signals (
+  id TEXT PRIMARY KEY,
+  queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
+  lead_id TEXT REFERENCES leads(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_signals_queue_email ON contact_signals(queue_id, email);
+
 -- Structured application events. Never stores secrets or raw provider output.
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

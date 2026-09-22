@@ -50,6 +50,17 @@ const ConfigSchema = z.object({
   // "live" allows single sends through the configured EmailTransport.
   // Missing or unknown means disabled: fail closed, never fail open.
   SEND_MODE: z.enum(["disabled", "local", "live"]).default("disabled"),
+  // Bulk campaign sending (Phase 8). Daily pacing per queue, bounded
+  // concurrency, explicit timezone for day boundaries, deterministic
+  // follow-up offsets, and a lifetime live-send cap per queue. Defaults are
+  // deliberately conservative: raise explicitly per deployment.
+  DEFAULT_DAILY_SEND_LIMIT: z.coerce.number().int().min(1).max(300).default(50),
+  MAX_DAILY_SEND_LIMIT: z.coerce.number().int().min(1).max(300).default(300),
+  SEND_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(1),
+  SEND_TIMEZONE: z.string().min(1).default("UTC"),
+  FOLLOWUP_DAY_OFFSETS: z.string().default("3,7,12"),
+  MAX_LIVE_SENDS: z.coerce.number().int().min(1).default(3),
+  SEND_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
 });
 
 export type BridgeConfig = z.infer<typeof ConfigSchema>;

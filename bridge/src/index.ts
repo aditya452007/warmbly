@@ -5,12 +5,17 @@ import { createBridgeApp } from "./server.js";
 import { SmtpError } from "./email/transport/types.js";
 
 async function main(): Promise<void> {
-  const { config, db, orchestrator, getEmailTransport } = buildOrchestrator();
+  const { config, db, orchestrator, bulkSender, getEmailTransport } = buildOrchestrator();
   const resumed = orchestrator.recover();
   if (resumed.length > 0) {
     log("info", "recovered stale leases", { count: resumed.length });
   }
+  const resumedQueues = bulkSender.recover();
+  if (resumedQueues.length > 0) {
+    log("info", "resumed bulk send queues", { count: resumedQueues.length });
+  }
   const app = createBridgeApp(orchestrator, {
+    bulkSender,
     checkEmail: async () => {
       const emailTransport = getEmailTransport();
       if (!emailTransport) {
@@ -32,6 +37,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     log("info", `received ${signal}, shutting down`);
     await orchestrator.shutdown();
+    bulkSender.shutdown();
     try {
       await getEmailTransport()?.close();
     } catch {

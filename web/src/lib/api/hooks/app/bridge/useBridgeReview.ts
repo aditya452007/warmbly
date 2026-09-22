@@ -1,15 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
     approveBridgeDraft,
+    approveFollowup,
+    cancelSendQueue,
+    createSendQueue,
     getBridgeDraft,
     getBridgePreview,
     getBridgeStatus,
+    getSendQueueMetrics,
     listBridgeDrafts,
     listBridgeRuns,
+    listSendQueueFollowups,
+    pauseSendQueue,
+    previewSendQueue,
     regenerateBridgeDraft,
     rejectBridgeDraft,
+    rejectFollowup,
+    resumeSendQueue,
     saveBridgeDraft,
     sendBridgeDraft,
+    startSendQueue,
 } from "@/lib/api/bridge";
 
 const KEY = "bridge";
@@ -112,6 +122,103 @@ export function useSendBridgeDraft() {
     return useMutation({
         mutationFn: (input: { id: string; recipient: string; confirmConsent?: boolean; force?: boolean }) =>
             sendBridgeDraft(input.id, input),
+        onSuccess: () => invalidate(),
+    });
+}
+
+function useInvalidateQueue() {
+    const queryClient = useQueryClient();
+    return () => {
+        void queryClient.invalidateQueries({ queryKey: [KEY, "queue"] });
+        void queryClient.invalidateQueries({ queryKey: [KEY, "queue-preview"] });
+        void queryClient.invalidateQueries({ queryKey: [KEY, "queue-followups"] });
+    };
+}
+
+export function useSendQueueMetrics(runId: string | null, refetchInterval?: number) {
+    return useQuery({
+        queryKey: [KEY, "queue", runId],
+        queryFn: () => getSendQueueMetrics(runId as string),
+        enabled: !!runId,
+        staleTime: 5_000,
+        refetchInterval,
+        retry: false,
+    });
+}
+
+export function useSendQueuePreview(runId: string | null, enabled: boolean) {
+    return useQuery({
+        queryKey: [KEY, "queue-preview", runId],
+        queryFn: () => previewSendQueue(runId as string),
+        enabled: !!runId && enabled,
+        staleTime: 10_000,
+        retry: 1,
+    });
+}
+
+export function useSendQueueFollowups(runId: string | null) {
+    return useQuery({
+        queryKey: [KEY, "queue-followups", runId],
+        queryFn: () => listSendQueueFollowups(runId as string),
+        enabled: !!runId,
+        staleTime: 10_000,
+        retry: false,
+    });
+}
+
+export function useCreateSendQueue() {
+    const invalidate = useInvalidateQueue();
+    return useMutation({
+        mutationFn: (runId: string) => createSendQueue(runId),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useStartSendQueue() {
+    const invalidate = useInvalidateQueue();
+    return useMutation({
+        mutationFn: (input: { runId: string; confirmed: boolean; consentAttested: boolean }) =>
+            startSendQueue(input.runId, { confirmed: input.confirmed, consentAttested: input.consentAttested }),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function usePauseSendQueue() {
+    const invalidate = useInvalidateQueue();
+    return useMutation({
+        mutationFn: (runId: string) => pauseSendQueue(runId),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useResumeSendQueue() {
+    const invalidate = useInvalidateQueue();
+    return useMutation({
+        mutationFn: (runId: string) => resumeSendQueue(runId),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useCancelSendQueue() {
+    const invalidate = useInvalidateQueue();
+    return useMutation({
+        mutationFn: (runId: string) => cancelSendQueue(runId),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useApproveFollowup() {
+    const invalidate = useInvalidateQueue();
+    return useMutation({
+        mutationFn: (id: string) => approveFollowup(id),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useRejectFollowup() {
+    const invalidate = useInvalidateQueue();
+    return useMutation({
+        mutationFn: (id: string) => rejectFollowup(id),
         onSuccess: () => invalidate(),
     });
 }

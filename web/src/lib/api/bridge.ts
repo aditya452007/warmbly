@@ -119,3 +119,100 @@ export function sendBridgeDraft(
 ): Promise<{ send: BridgeSend; draft: BridgeDraft }> {
     return bridgeFetch(`/api/drafts/${draftId}/send`, { method: "POST", body: JSON.stringify(input) });
 }
+
+export interface BridgeSendQueue {
+    id: string;
+    run_id: string;
+    status: string;
+    daily_limit: number;
+    timezone: string;
+    concurrency: number;
+    consent_attested: number;
+    followup_enabled: number;
+    followup_days: string;
+    followup_require_approval: number;
+    max_live_sends: number;
+}
+
+export interface BridgeQueuePreview {
+    recipients: number;
+    approvedDrafts: number;
+    dailyLimit: number;
+    sender: string;
+    mode: string;
+    provider: string;
+    followupBehavior: string;
+    timezone: string;
+}
+
+export interface BridgeQueueMetrics {
+    status: string;
+    queued: number;
+    sending: number;
+    sent: number;
+    failed: number;
+    blocked: number;
+    sent_today: number;
+    remaining_today: number;
+    daily_limit: number;
+    timezone: string;
+    followups: Array<{ seq: number; day_offset: number; pending: number; sent: number; blocked: number }>;
+}
+
+export interface BridgeFollowup {
+    id: string;
+    queue_id: string;
+    lead_id: string;
+    parent_draft_id: string;
+    seq: number;
+    subject: string;
+    body: string;
+    status: string;
+    version: number;
+}
+
+export function createSendQueue(
+    runId: string,
+    input: { dailyLimit?: number; timezone?: string; concurrency?: number; followupDays?: number[]; followupRequireApproval?: boolean; maxLiveSends?: number } = {},
+): Promise<{ queue: BridgeSendQueue }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function previewSendQueue(runId: string): Promise<{ preview: BridgeQueuePreview }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/preview`);
+}
+
+export function startSendQueue(
+    runId: string,
+    input: { confirmed: boolean; consentAttested: boolean },
+): Promise<{ queue: BridgeSendQueue; enqueued: number }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/start`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function pauseSendQueue(runId: string): Promise<{ queue: BridgeSendQueue }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/pause`, { method: "POST" });
+}
+
+export function resumeSendQueue(runId: string): Promise<{ queue: BridgeSendQueue }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/resume`, { method: "POST" });
+}
+
+export function cancelSendQueue(runId: string): Promise<{ queue: BridgeSendQueue }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/cancel`, { method: "POST" });
+}
+
+export function getSendQueueMetrics(runId: string): Promise<{ metrics: BridgeQueueMetrics }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue`);
+}
+
+export function listSendQueueFollowups(runId: string): Promise<{ followups: BridgeFollowup[] }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/followups?limit=200`);
+}
+
+export function approveFollowup(followupId: string): Promise<{ followup: BridgeFollowup }> {
+    return bridgeFetch(`/api/followups/${followupId}/approve`, { method: "POST" });
+}
+
+export function rejectFollowup(followupId: string): Promise<{ followup: BridgeFollowup }> {
+    return bridgeFetch(`/api/followups/${followupId}/reject`, { method: "POST" });
+}

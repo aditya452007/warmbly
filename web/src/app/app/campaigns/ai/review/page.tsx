@@ -26,6 +26,7 @@ import {
 import type { BridgeDraft } from "@/lib/api/bridge";
 import { cn } from "@/lib/utils";
 import ReviewDrawer, { draftLabel, draftTone } from "./ReviewDrawer";
+import BulkSendPanel from "./BulkSendPanel";
 
 export default function AIReviewPage() {
     const [params] = useSearchParams();
@@ -134,8 +135,9 @@ export default function AIReviewPage() {
                         <Stat label="Failed" value={counts?.failed ?? 0} sub="see errors" last />
                     </StatStrip>
 
-                    <SectionBar label="Drafts" count={drafts.length} />
+                    {runId && <BulkSendPanel runId={runId} />}
 
+                    <SectionBar label="Drafts" count={drafts.length} />
                     <PageBody>
                         {draftsQuery.isPending ? (
                             <p className="px-5 py-8 text-[12.5px] text-slate-500">Loading drafts…</p>

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { BridgeOrchestrator } from "./orchestrate/orchestrator.js";
+import type { BulkSender } from "./orchestrate/bulkSend.js";
 import { RunRequestSchema } from "./domain/validate.js";
 
 // Small local control plane. No auth: it binds localhost only (see index.ts)
@@ -10,6 +11,7 @@ export interface BridgeServerDeps {
   // Optional transport probe. Reports provider identity and reachability
   // only: never usernames, passwords, or SMTP responses.
   checkEmail?: () => Promise<{ provider: string; configured: boolean; connection: "ok" | "error" | "unconfigured" }>;
+  bulkSender?: BulkSender;
 }
 
 export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeServerDeps): Hono {
@@ -256,6 +258,194 @@ export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeS
       return c.json({ sends: orchestrator.listSends(c.req.param("draftId")) });
     } catch {
       return c.json({ error: "draft not found" }, 404);
+    }
+  });
+
+  // Bulk campaign sending (Phase 8). Queue creation is inert; only an
+  // explicit confirmed + consent-attested start enqueues and pumps.
+  app.post("/api/campaigns/:campaignId/send-queue", async (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    let body: unknown = null;
+    try {
+      body = await c.req.json().catch(() => ({}));
+    } catch {
+      body = {};
+    }
+    const record = (body ?? {}) as Record<string, unknown>;
+    try {
+      const queue = bulk.createQueue(c.req.param("campaignId"), {
+        ...(typeof record.dailyLimit === "number" ? { dailyLimit: record.dailyLimit } : {}),
+        ...(typeof record.timezone === "string" ? { timezone: record.timezone } : {}),
+        ...(typeof record.concurrency === "number" ? { concurrency: record.concurrency } : {}),
+        ...(typeof record.followupEnabled === "boolean" ? { followupEnabled: record.followupEnabled } : {}),
+        ...(Array.isArray(record.followupDays) ? { followupDays: record.followupDays as number[] } : {}),
+        ...(typeof record.followupRequireApproval === "boolean" ? { followupRequireApproval: record.followupRequireApproval } : {}),
+        ...(typeof record.maxLiveSends === "number" ? { maxLiveSends: record.maxLiveSends } : {}),
+      });
+      return c.json({ queue }, 201);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "could not create queue" }, 400);
+    }
+  });
+
+  app.get("/api/campaigns/:campaignId/send-queue/preview", async (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    try {
+      return c.json({ preview: await bulk.previewQueue(c.req.param("campaignId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "no send queue" }, 404);
+    }
+  });
+
+  app.post("/api/campaigns/:campaignId/send-queue/start", async (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    let body: unknown = null;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const record = (body ?? {}) as Record<string, unknown>;
+    try {
+      const out = await bulk.startQueue(c.req.param("campaignId"), {
+        confirmed: record.confirmed === true,
+        consentAttested: record.consentAttested === true,
+      });
+      return c.json(out, 202);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "could not start queue" }, 400);
+    }
+  });
+
+  app.post("/api/campaigns/:campaignId/send-queue/pause", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    try {
+      return c.json({ queue: bulk.pauseQueue(c.req.param("campaignId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot pause" }, 400);
+    }
+  });
+
+  app.post("/api/campaigns/:campaignId/send-queue/resume", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    try {
+      return c.json({ queue: bulk.resumeQueue(c.req.param("campaignId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot resume" }, 400);
+    }
+  });
+
+  app.post("/api/campaigns/:campaignId/send-queue/cancel", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    try {
+      return c.json({ queue: bulk.cancelQueue(c.req.param("campaignId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot cancel" }, 400);
+    }
+  });
+
+  app.post("/api/campaigns/:campaignId/send-queue/limit", async (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    let body: unknown = null;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const maxLiveSends = (body as Record<string, unknown>)?.maxLiveSends;
+    if (typeof maxLiveSends !== "number") return c.json({ error: "maxLiveSends is required" }, 400);
+    try {
+      return c.json({ queue: bulk.setMaxLiveSends(c.req.param("campaignId"), maxLiveSends) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot raise limit" }, 400);
+    }
+  });
+
+  app.get("/api/campaigns/:campaignId/send-queue", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    try {
+      return c.json({ metrics: bulk.metrics(c.req.param("campaignId")) });
+    } catch {
+      return c.json({ error: "no send queue" }, 404);
+    }
+  });
+
+  app.get("/api/campaigns/:campaignId/send-queue/items", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    const limit = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 50)));
+    const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+    try {
+      return c.json({ items: bulk.listItems(c.req.param("campaignId"), limit, offset) });
+    } catch {
+      return c.json({ error: "no send queue" }, 404);
+    }
+  });
+
+  app.get("/api/campaigns/:campaignId/send-queue/followups", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    const limit = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 50)));
+    const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+    try {
+      return c.json({ followups: bulk.listFollowups(c.req.param("campaignId"), limit, offset) });
+    } catch {
+      return c.json({ error: "no send queue" }, 404);
+    }
+  });
+
+  app.post("/api/followups/:followupId/approve", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    try {
+      return c.json({ followup: bulk.approveFollowup(c.req.param("followupId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot approve" }, 400);
+    }
+  });
+
+  app.post("/api/followups/:followupId/reject", (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    try {
+      return c.json({ followup: bulk.rejectFollowup(c.req.param("followupId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot reject" }, 400);
+    }
+  });
+
+  // Inbound-signal seam: replies, unsubscribes, complaints halt future sends
+  // for that address. Reply-sync automation writes here when it lands.
+  app.post("/api/campaigns/:campaignId/signals", async (c) => {
+    const bulk = deps?.bulkSender;
+    if (!bulk) return c.json({ error: "bulk sending is not wired" }, 501);
+    let body: unknown = null;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const record = (body ?? {}) as Record<string, unknown>;
+    if (typeof record.email !== "string" || typeof record.kind !== "string") {
+      return c.json({ error: "email and kind are required" }, 400);
+    }
+    try {
+      bulk.recordSignal(c.req.param("campaignId"), {
+        email: record.email,
+        kind: record.kind,
+        ...(typeof record.leadId === "string" ? { leadId: record.leadId } : {}),
+      });
+      return c.json({ recorded: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot record signal" }, 400);
     }
   });
 
