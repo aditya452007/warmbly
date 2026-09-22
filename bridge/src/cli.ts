@@ -2,6 +2,7 @@ import { loadConfig } from "./config.js";
 import { openBridgeDb, closeDb } from "./db.js";
 import { buildOrchestrator } from "./app.js";
 import { WarmblyClient } from "./warmbly/client.js";
+import { createEmailTransport } from "./email/transport/factory.js";
 
 // Minimal operator CLI: no framework, argv parsing only.
 // Usage: bridge doctor | run <warmblyCampaignId> [flags] | status <runId> | recover
@@ -87,6 +88,25 @@ async function doctor(): Promise<void> {
     console.log(`opencode: ${res.ok ? "ok" : "down"}`);
   } catch {
     console.log("opencode: down");
+  }
+  // Transport connectivity only: verify() performs EHLO/TLS/auth and never
+  // sends a message. Secrets stay out of the output.
+  try {
+    const transport = createEmailTransport(config);
+    if (!transport) {
+      console.log("email: unconfigured");
+    } else {
+      try {
+        await transport.verify();
+        console.log(`email: ok (${transport.name})`);
+      } catch (err) {
+        console.log(`email: error (${transport.name}: ${err instanceof Error ? err.message : "failed"})`);
+      } finally {
+        await transport.close();
+      }
+    }
+  } catch (err) {
+    console.log(`email: misconfigured (${err instanceof Error ? err.message : "invalid"})`);
   }
 }
 

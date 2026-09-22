@@ -31,6 +31,20 @@ const ConfigSchema = z.object({
   AI_RETRY_ATTEMPTS: z.coerce.number().int().min(0).max(10).default(3),
   WARMBLY_API_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15000),
   WARMBLY_RETRY_ATTEMPTS: z.coerce.number().int().min(0).max(10).default(3),
+  // Outbound email transport. "none" (default) means unconfigured: the bridge
+  // boots and serves, but anything needing delivery reports unconfigured.
+  // "brevo" requires the full Brevo relay credentials below; "local" points
+  // at Mailpit for safe local testing. Unknown values fail fast at startup.
+  EMAIL_PROVIDER: z.string().default("none"),
+  BREVO_SMTP_HOST: z.string().default("smtp-relay.brevo.com"),
+  BREVO_SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+  BREVO_SMTP_USER: z.string().default(""),
+  BREVO_SMTP_PASSWORD: z.string().default(""),
+  BREVO_FROM_EMAIL: z.string().default(""),
+  BREVO_FROM_NAME: z.string().default(""),
+  SMTP_SECURITY: z.string().default("starttls"),
+  LOCAL_SMTP_HOST: z.string().default("127.0.0.1"),
+  LOCAL_SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(11025),
 });
 
 export type BridgeConfig = z.infer<typeof ConfigSchema>;
