@@ -224,6 +224,41 @@ export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeS
     }
   });
 
+  // Single controlled send. Body: { recipient, confirmConsent?, force? }.
+  // Refusals (gate) are 400s with a machine-safe message; a stale-version
+  // conflict is 409. Never invokes AI; never starts anything.
+  app.post("/api/drafts/:draftId/send", async (c) => {
+    let body: unknown = null;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const record = (body ?? {}) as Record<string, unknown>;
+    if (typeof record.recipient !== "string") {
+      return c.json({ error: "recipient is required" }, 400);
+    }
+    try {
+      const result = await orchestrator.sendDraft(c.req.param("draftId"), {
+        recipient: record.recipient,
+        confirmConsent: record.confirmConsent === true,
+        force: record.force === true,
+      });
+      return c.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "could not send";
+      return c.json({ error: message }, 400);
+    }
+  });
+
+  app.get("/api/drafts/:draftId/sends", (c) => {
+    try {
+      return c.json({ sends: orchestrator.listSends(c.req.param("draftId")) });
+    } catch {
+      return c.json({ error: "draft not found" }, 404);
+    }
+  });
+
   return app;
 }
 

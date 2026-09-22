@@ -6,6 +6,7 @@ import { DEFAULT_LANES, OpenCodeDiscoveryProvider, type Lane } from "../ai/disco
 import { buildPersonalizePrompt, buildResearchPrompt, promptVersion } from "../prompts/index.js";
 import {
   isHttpUrl,
+  escapeHtml,
   leadIdentity,
   normalizeDomain,
   normalizeEmail,
@@ -15,6 +16,7 @@ import {
 } from "../domain/validate.js";
 import type { RunRequest } from "../domain/types.js";
 import { renderOutreach, OUTREACH_TEMPLATE_NAME, OUTREACH_TEMPLATE_VERSION } from "../email/render.js";
+import { AI_BODY_VAR } from "../email/template.js";
 import { log } from "../log.js";
 import {
   AgentRuns,
@@ -25,12 +27,15 @@ import {
   Events,
   Leads,
   Research,
+  Sends,
+  SEND_STATUS,
   type DraftRow,
   type LeadRow,
 } from "../store/repositories.js";
 import { ContactSyncBuffer, type SyncRecorder } from "../warmbly/sync.js";
 import { mapLeadToContact, mapOutreachToCustomFields } from "../warmbly/contactMapper.js";
 import { WarmblyClient } from "../warmbly/client.js";
+import type { EmailTransport } from "../email/transport/types.js";
 import { runBounded } from "./pool.js";
 
 export interface OrchestratorDeps {
@@ -42,8 +47,10 @@ export interface OrchestratorDeps {
   research: Research;
   drafts: Drafts;
   events: Events;
+  sends: Sends;
   warmbly: WarmblyClient;
   createRuntime?: (provider: string) => AgentRuntime;
+  getEmailTransport?: () => EmailTransport | null;
 }
 
 const HEARTBEAT_MS = 15_000;
@@ -72,8 +79,10 @@ export class BridgeOrchestrator {
   private readonly research: Research;
   private readonly drafts: Drafts;
   private readonly events: Events;
+  private readonly sends: Sends;
   private readonly warmbly: WarmblyClient;
   private readonly createRuntime: (provider: string) => AgentRuntime;
+  private readonly getEmailTransport: () => EmailTransport | null;
   private readonly activeSessions = new Set<string>();
   private readonly activeJobs = new Set<string>();
   private shuttingDown = false;
@@ -87,7 +96,9 @@ export class BridgeOrchestrator {
     this.research = deps.research;
     this.drafts = deps.drafts;
     this.events = deps.events;
+    this.sends = deps.sends;
     this.warmbly = deps.warmbly;
+    this.getEmailTransport = deps.getEmailTransport ?? (() => null);
     this.createRuntime =
       deps.createRuntime ??
       ((provider) =>
@@ -763,8 +774,11 @@ export class BridgeOrchestrator {
     const counts = this.leads.countsByStatus(runId);
     const draftCounts = this.drafts.countsByStatus(runId);
     const needsReview = (draftCounts.NEEDS_REVIEW ?? 0) + (draftCounts.RENDERED ?? 0);
+    const sendMode = this.config.SEND_MODE;
+    const emailProvider = (typeof this.config.EMAIL_PROVIDER === "string" ? this.config.EMAIL_PROVIDER : "").trim().toLowerCase() || "none";
     return {
       status: run.status,
+      send: { mode: sendMode, email_provider: emailProvider },
       agents: {
         total: agents.length,
         running: agents.filter((a) => a.status === "RUNNING").length,
@@ -1047,4 +1061,215 @@ export class BridgeOrchestrator {
       }
     }
   }
+
+  // Single controlled send. Two production paths, both gated identically:
+  // - local: Warmbly-native test-email through an org mailbox into Mailpit.
+  //   No enrollment, no start, Warmbly tracking off by Warmbly's design.
+  // - live: bridge Brevo transport to one controlled recipient. Only path
+  //   available because Warmbly workers speak mailbox providers, never Brevo.
+  // Never invokes AI: sending is fully deterministic from stored state.
+  async sendDraft(
+    draftId: string,
+    input: { recipient: string; confirmConsent?: boolean; force?: boolean },
+  ): Promise<unknown> {
+    const mode = this.config.SEND_MODE;
+    if (mode !== "local" && mode !== "live") {
+      throw new SendRefused("config", "sending is disabled (SEND_MODE must be local or live)");
+    }
+    const draft = this.drafts.get(draftId);
+    if (!draft) throw new SendRefused("safety", "draft not found");
+    if (draft.status !== DRAFT_STATUS.APPROVED) {
+      throw new SendRefused("safety", `only approved drafts may be sent (status is ${draft.status})`);
+    }
+    const recipient = (input.recipient ?? "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      throw new SendRefused("config", "a valid recipient email is required");
+    }
+    const lead = this.leads.get(draft.lead_id);
+    if (!lead) throw new SendRefused("safety", "draft not found");
+    const { run } = this.runOffers(lead.campaign_run_id);
+
+    const prior = this.sends.getByDraftVersion(draft.id, draft.version);
+    if (prior?.status === SEND_STATUS.SENT) {
+      throw new SendRefused("safety", "this draft version was already sent; edit and re-approve to send again");
+    }
+    if (prior && prior.status !== SEND_STATUS.RETRYABLE) {
+      throw new SendRefused("safety", `send already ${prior.status.toLowerCase()}`);
+    }
+    if (prior?.status === SEND_STATUS.RETRYABLE && !input.force) {
+      throw new SendRefused(
+        "safety",
+        "previous attempt may have been accepted; retry explicitly with force to accept the duplicate risk",
+      );
+    }
+
+    let suppressed = false;
+    try {
+      suppressed = await this.warmbly.isSuppressed(recipient);
+    } catch (err) {
+      throw new SendRefused("config", `suppression check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (suppressed) {
+      throw new SendRefused("safety", "recipient is on the workspace suppression list");
+    }
+
+    let subscribed: boolean | null = null;
+    let contactId: string | null = lead.warmbly_contact_id;
+    if (lead.email) {
+      try {
+        const found = await this.warmbly.lookupContactByEmail(lead.email);
+        contactId = found?.id ?? contactId;
+      } catch {
+        // Lookup failure must not gate a send; subscription below stays unknown.
+      }
+    }
+    if (contactId) {
+      try {
+        const contact = await this.warmbly.getContact(contactId);
+        subscribed = contact.subscribed;
+      } catch {
+        // Unreadable contact state fails closed below for live sends.
+      }
+    }
+    // AI-discovered contacts carry subscribed=false (no recorded consent).
+    // For a live send the operator must explicitly attest consent per send;
+    // the attestation is recorded on the send row. Never flipped silently.
+    if (mode === "live" && subscribed === false && !input.confirmConsent) {
+      throw new SendRefused("safety", "contact has no recorded consent; confirm explicitly to send this one message");
+    }
+
+    const idempotencyKey = `send:${draft.id}:v${draft.version}`;
+    const sendId = prior?.id ?? randomUUID();
+    // createdHere tracks ownership: only the attempt that created the row may
+    // resolve it. A gate refusal deletes a self-created row (nothing was
+    // attempted); a reused row is left exactly as it was.
+    const createdHere = !prior;
+    if (createdHere) {
+      this.sends.create({
+        id: sendId,
+        draftId: draft.id,
+        version: draft.version,
+        idempotencyKey,
+        recipient,
+        provider: mode === "live" ? "brevo" : "warmbly-test",
+      });
+    } else if (input.force) {
+      this.sends.markForceRetried(sendId);
+    }
+    this.sends.setStatus(sendId, SEND_STATUS.SENDING);
+    this.events.append({ kind: "send.started", campaignRunId: lead.campaign_run_id, leadId: lead.id, message: mode });
+
+    try {
+      if (mode === "local") {
+        const providerMessageId = await this.sendViaWarmblyTestEmail(run, lead, draft, recipient, contactId);
+        this.sends.setStatus(sendId, SEND_STATUS.SENT, undefined, providerMessageId);
+      } else {
+        const providerMessageId = await this.sendViaBrevo(draft, run, recipient);
+        this.sends.setStatus(sendId, SEND_STATUS.SENT, undefined, providerMessageId);
+      }
+      this.events.append({ kind: "send.succeeded", campaignRunId: lead.campaign_run_id, leadId: lead.id });
+      return { send: this.sends.getByDraftVersion(draft.id, draft.version), draft: this.getDraft(draftId) };
+    } catch (err) {
+      if (err instanceof SendRefused) {
+        // Gate refusal: nothing reached any provider, so a self-created row
+        // is removed and a reused row is untouched. The refusal is audit-only.
+        if (createdHere) this.sends.delete(sendId);
+        this.events.append({
+          kind: "send.refused",
+          campaignRunId: lead.campaign_run_id,
+          leadId: lead.id,
+          message: err.message.slice(0, 200),
+        });
+        throw err;
+      }
+      const retryable = isRetryableSendError(err);
+      this.sends.setStatus(
+        sendId,
+        retryable ? SEND_STATUS.RETRYABLE : SEND_STATUS.FAILED,
+        err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500),
+      );
+      this.events.append({
+        kind: "send.failed",
+        campaignRunId: lead.campaign_run_id,
+        leadId: lead.id,
+        message: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+      });
+      throw err;
+    }
+  }
+
+  // Warmbly-native single send: the prepared AI step rendered for the real
+  // contact, mailed through the first org mailbox. Never enrolls, never
+  // starts; Warmbly marks it [TEST] with tracking off.
+  private async sendViaWarmblyTestEmail(
+    run: RunRequest,
+    lead: LeadRow,
+    draft: DraftRow,
+    recipient: string,
+    contactId: string | null,
+  ): Promise<string> {
+    const accounts = await this.warmbly.listAccounts();
+    if (accounts.length === 0) throw new SendRefused("config", "no sending mailbox connected in Warmbly");
+    const steps = await this.warmbly.listSteps(run.warmblyCampaignId);
+    const step = steps.find((s) => s.name === OUTREACH_STEP_NAME) ?? steps[0];
+    if (!step) throw new SendRefused("config", "campaign has no prepared step to send");
+    const sent = await this.warmbly.sendTestEmail({
+      campaignId: run.warmblyCampaignId,
+      accountId: accounts[0].id,
+      recipient,
+      stepId: step.id,
+      ...(contactId ? { contactId } : {}),
+    });
+    return `warmbly-test:${sent.step_id}`;
+  }
+
+  // Bridge-direct Brevo send: the APPROVED stored subject/body re-rendered
+  // deterministically (no AI) with the run's own offers, then delivered
+  // verbatim. Sender is the approved From address, never the SMTP login.
+  private async sendViaBrevo(draft: DraftRow, run: RunRequest, recipient: string): Promise<string> {
+    const transport = this.getEmailTransport();
+    if (!transport || transport.name !== "brevo") {
+      throw new SendRefused("config", "live sending requires EMAIL_PROVIDER=brevo");
+    }
+    const rendered = await renderOutreach({ aiSubject: draft.subject, aiBodyText: draft.body, offers: run.offerUrls.slice(0, 3) });
+    const from = typeof (transport as unknown as { defaultFrom?: () => { email: string; name?: string } }).defaultFrom === "function"
+      ? (transport as unknown as { defaultFrom: () => { email: string; name?: string } }).defaultFrom()
+      : { email: "" };
+    if (!from.email) throw new SendRefused("config", "no approved sender address configured");
+    const html = rendered.stepHtml.split(AI_BODY_VAR).join(escapeHtml(draft.body));
+    const result = await transport.send({
+      from,
+      to: [{ email: recipient }],
+      subject: rendered.subject,
+      html,
+      text: draft.body,
+      headers: { "X-Bridge-Draft": draft.id, "X-Bridge-Run": "send" },
+    });
+    return result.messageId || `brevo:${draft.id}:v${draft.version}`;
+  }
+
+  listSends(draftId: string): unknown[] {
+    return this.sends.listByDraft(draftId);
+  }
 }
+
+// Refusals are terminal operator/safety decisions, never retried.
+export class SendRefused extends Error {
+  readonly kind: "config" | "safety";
+  constructor(kind: "config" | "safety", message: string) {
+    super(message);
+    this.name = "SendRefused";
+    this.kind = kind;
+  }
+}
+
+function isRetryableSendError(err: unknown): boolean {
+  if (err instanceof SendRefused) return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === "temp" || code === "connection" || code === "timeout") return true;
+  const status = (err as { status?: unknown }).status;
+  if (status === 429 || (typeof status === "number" && status >= 500)) return true;
+  const message = String((err as { message?: unknown }).message ?? err).toLowerCase();
+  return /timeout|timed out|econn|enotfound|eai_again|429|5\d\d|temporar/.test(message);
+}
+

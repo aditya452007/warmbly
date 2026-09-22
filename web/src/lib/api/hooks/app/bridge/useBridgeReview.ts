@@ -9,6 +9,7 @@ import {
     regenerateBridgeDraft,
     rejectBridgeDraft,
     saveBridgeDraft,
+    sendBridgeDraft,
 } from "@/lib/api/bridge";
 
 const KEY = "bridge";
@@ -102,6 +103,15 @@ export function useRegenerateBridgeDraft() {
     const invalidate = useInvalidateDrafts();
     return useMutation({
         mutationFn: (id: string) => regenerateBridgeDraft(id),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useSendBridgeDraft() {
+    const invalidate = useInvalidateDrafts();
+    return useMutation({
+        mutationFn: (input: { id: string; recipient: string; confirmConsent?: boolean; force?: boolean }) =>
+            sendBridgeDraft(input.id, input),
         onSuccess: () => invalidate(),
     });
 }

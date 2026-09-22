@@ -45,6 +45,11 @@ const ConfigSchema = z.object({
   SMTP_SECURITY: z.string().default("starttls"),
   LOCAL_SMTP_HOST: z.string().default("127.0.0.1"),
   LOCAL_SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(11025),
+  // Outbound send gate. "disabled" (default) refuses every send; "local"
+  // allows single sends through Warmbly's test-email path into Mailpit;
+  // "live" allows single sends through the configured EmailTransport.
+  // Missing or unknown means disabled: fail closed, never fail open.
+  SEND_MODE: z.enum(["disabled", "local", "live"]).default("disabled"),
 });
 
 export type BridgeConfig = z.infer<typeof ConfigSchema>;

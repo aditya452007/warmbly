@@ -62,6 +62,7 @@ export function listBridgeRuns(warmblyCampaignId: string): Promise<{ runs: Bridg
 
 export function getBridgeStatus(runId: string): Promise<{
     status: string;
+    send: { mode: string; email_provider: string };
     agents: { total: number; running: number; completed: number; failed: number };
     leads: Record<string, number>;
     drafts: { total: number; needs_review: number; approved: number; rejected: number; failed: number };
@@ -99,4 +100,22 @@ export function rejectBridgeDraft(draftId: string): Promise<{ draft: BridgeDraft
 
 export function regenerateBridgeDraft(draftId: string): Promise<{ draft: BridgeDraft }> {
     return bridgeFetch(`/api/drafts/${draftId}/regenerate`, { method: "POST" });
+}
+
+export interface BridgeSend {
+    id: string;
+    draft_id: string;
+    draft_version: number;
+    recipient: string;
+    status: string;
+    provider: string;
+    provider_message_id: string | null;
+    error_message: string | null;
+}
+
+export function sendBridgeDraft(
+    draftId: string,
+    input: { recipient: string; confirmConsent?: boolean; force?: boolean },
+): Promise<{ send: BridgeSend; draft: BridgeDraft }> {
+    return bridgeFetch(`/api/drafts/${draftId}/send`, { method: "POST", body: JSON.stringify(input) });
 }

@@ -238,7 +238,11 @@ export default function AIReviewPage() {
                     )}
 
                     {openDraftId && (
-                        <ReviewDrawer draftId={openDraftId} onClose={() => setOpenDraftId(null)} />
+                        <ReviewDrawer
+                            draftId={openDraftId}
+                            onClose={() => setOpenDraftId(null)}
+                            sendMode={String(statusQuery.data?.send?.mode ?? "disabled")}
+                        />
                     )}
                     <p className="px-5 py-3 text-[11px] text-slate-400">
                         Approval only marks drafts ready for a future send. Nothing here starts a campaign or sends email.{" "}

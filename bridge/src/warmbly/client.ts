@@ -182,13 +182,18 @@ export class WarmblyClient {
     return parsed.contact ? { id: parsed.contact.id } : null;
   }
 
-  async getContact(id: string): Promise<{ id: string; custom_fields: Record<string, string> }> {
+  async getContact(id: string): Promise<{ id: string; email: string; subscribed: boolean; custom_fields: Record<string, string> }> {
     const data = await this.request<unknown>("GET", `/contacts/${id}`);
     const parsed = z
-      .object({ id: z.string(), custom_fields: z.record(z.string(), z.string()).optional() })
+      .object({
+        id: z.string(),
+        email: z.string().optional(),
+        subscribed: z.boolean().optional(),
+        custom_fields: z.record(z.string(), z.string()).optional(),
+      })
       .passthrough()
       .parse(data);
-    return { id: parsed.id, custom_fields: parsed.custom_fields ?? {} };
+    return { id: parsed.id, email: parsed.email ?? "", subscribed: parsed.subscribed ?? false, custom_fields: parsed.custom_fields ?? {} };
   }
 
   async searchContacts(query: string, limit = 20): Promise<Array<{ id: string }>> {
@@ -211,5 +216,56 @@ export class WarmblyClient {
 
   async updateContact(id: string, patch: { custom_fields?: Record<string, string>; company?: string }): Promise<void> {
     await this.request("PATCH", `/contacts/${id}`, patch);
+  }
+
+  // Sending mailboxes. Returns id/email/status rows; the caller picks
+  // deterministically and lets Warmbly's own send validation be authoritative.
+  async listAccounts(): Promise<Array<{ id: string; email: string; status: string }>> {
+    const data = await this.request<unknown>("GET", "/emails");
+    const parsed = z
+      .object({ data: z.array(z.object({ id: z.string(), email: z.string(), status: z.string().optional() }).passthrough()) })
+      .parse(data);
+    return parsed.data.map((a) => ({ id: a.id, email: a.email, status: a.status ?? "" }));
+  }
+
+  // Warmbly-native single send: renders a campaign step (optionally for a
+  // real contact) and mails it through an org mailbox. Never starts or
+  // enrolls anything; tracking is off and the subject carries [TEST] by
+  // Warmbly's design.
+  async sendTestEmail(args: {
+    campaignId: string;
+    accountId: string;
+    recipient: string;
+    stepId?: string;
+    contactId?: string;
+  }): Promise<{ recipient: string; subject: string; step_id: string }> {
+    const data = await this.request<unknown>("POST", `/campaigns/${args.campaignId}/test-email`, {
+      account_id: args.accountId,
+      recipient: args.recipient,
+      ...(args.stepId ? { step_id: args.stepId } : {}),
+      ...(args.contactId ? { contact_id: args.contactId } : {}),
+    });
+    const parsed = z.object({ recipient: z.string(), subject: z.string(), step_id: z.string() }).passthrough().parse(data);
+    return { recipient: parsed.recipient, subject: parsed.subject, step_id: parsed.step_id };
+  }
+
+  // Workspace suppression list lookup for one address. Any hit blocks
+  // sending; misses never fail closed here (a failed lookup is reported by
+  // the caller as its own error class).
+  async isSuppressed(email: string): Promise<boolean> {
+    const data = await this.request<unknown>(`GET`, `/suppressions?q=${encodeURIComponent(email)}&limit=10`);
+    const parsed = z
+      .object({ data: z.array(z.object({ email: z.string().optional() }).passthrough()).optional() })
+      .passthrough()
+      .parse(data);
+    const rows = parsed.data ?? [];
+    const needle = email.trim().toLowerCase();
+    const domain = needle.split("@")[1] ?? "";
+    return rows.some((r) => {
+      const entry = (r.email ?? "").trim().toLowerCase();
+      if (!entry) return false;
+      if (!entry.includes("@")) return domain !== "" && (domain === entry || domain.endsWith(`.${entry}`));
+      return entry === needle;
+    });
   }
 }

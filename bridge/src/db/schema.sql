@@ -108,6 +108,26 @@ CREATE TABLE IF NOT EXISTS outreach_drafts (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- One controlled send per draft version. The UNIQUE(draft_id, draft_version)
+-- is the double-click/duplicate guard: a second send of identical content is
+-- refused, while a re-approved edit (new version) may send again.
+CREATE TABLE IF NOT EXISTS sends (
+  id TEXT PRIMARY KEY,
+  draft_id TEXT NOT NULL REFERENCES outreach_drafts(id) ON DELETE CASCADE,
+  draft_version INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED',
+  provider TEXT NOT NULL DEFAULT '',
+  provider_message_id TEXT,
+  error_message TEXT,
+  force_retried INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (draft_id, draft_version)
+);
+CREATE INDEX IF NOT EXISTS idx_sends_draft ON sends(draft_id);
+
 -- Structured application events. Never stores secrets or raw provider output.
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

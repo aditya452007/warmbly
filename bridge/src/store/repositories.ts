@@ -768,11 +768,11 @@ export class Drafts {
 
 export interface EventRow {
   id: number;
-  kind: string;
   campaign_run_id: string | null;
   agent_id: string | null;
   job_id: string | null;
   lead_id: string | null;
+  kind: string;
   message: string;
   created_at: string;
 }
@@ -817,5 +817,85 @@ export class Events {
 
   list(runId: string, limit: number): EventRow[] {
     return this.listStmt.all(runId, limit) as EventRow[];
+  }
+}
+
+export const SEND_STATUS = {
+  QUEUED: "SEND_QUEUED",
+  SENDING: "SENDING",
+  SENT: "SENT",
+  RETRYABLE: "SEND_RETRYABLE",
+  FAILED: "SEND_FAILED",
+} as const;
+
+export interface SendRow {
+  id: string;
+  draft_id: string;
+  draft_version: number;
+  idempotency_key: string;
+  recipient: string;
+  status: string;
+  provider: string;
+  provider_message_id: string | null;
+  error_message: string | null;
+  force_retried: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// One controlled send per draft version. The UNIQUE(draft_id, draft_version)
+// constraint is the duplicate guard: re-sending identical approved content
+// is refused; only a re-approved edit (new version) may send again.
+export class Sends {
+  constructor(private db: BridgeDb) {}
+
+  getByDraftVersion(draftId: string, version: number): SendRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM sends WHERE draft_id = ? AND draft_version = ?")
+      .get(draftId, version) as SendRow | undefined;
+  }
+
+  create(args: {
+    id: string;
+    draftId: string;
+    version: number;
+    idempotencyKey: string;
+    recipient: string;
+    provider: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO sends (id, draft_id, draft_version, idempotency_key, recipient, status, provider)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(args.id, args.draftId, args.version, args.idempotencyKey, args.recipient, SEND_STATUS.QUEUED, args.provider);
+  }
+
+  setStatus(id: string, status: string, error?: string, providerMessageId?: string): void {
+    this.db
+      .prepare(
+        `UPDATE sends SET status = ?, error_message = COALESCE(?, error_message),
+         provider_message_id = COALESCE(?, provider_message_id), updated_at = ? WHERE id = ?`,
+      )
+      .run(status, error ?? null, providerMessageId ?? null, utcNow(), id);
+  }
+
+  markForceRetried(id: string): void {
+    this.db
+      .prepare("UPDATE sends SET force_retried = 1, updated_at = ? WHERE id = ?")
+      .run(utcNow(), id);
+  }
+
+  // Removes a row for an attempt that never reached the provider (gate
+  // refusal after row creation). Nothing was sent, so no trace may remain
+  // to block a later legitimate attempt.
+  delete(id: string): void {
+    this.db.prepare("DELETE FROM sends WHERE id = ?").run(id);
+  }
+
+  listByDraft(draftId: string): SendRow[] {
+    return this.db
+      .prepare("SELECT * FROM sends WHERE draft_id = ? ORDER BY created_at ASC")
+      .all(draftId) as SendRow[];
   }
 }

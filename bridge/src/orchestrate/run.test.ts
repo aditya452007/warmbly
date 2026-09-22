@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { openBridgeDb, closeDb } from "../db.js";
-import { AgentRuns, CampaignRuns, DiscoveryJobs, Drafts, Events, Leads, Research } from "../store/repositories.js";
+import { AgentRuns, CampaignRuns, DiscoveryJobs, Drafts, Events, Leads, Research, Sends } from "../store/repositories.js";
 import { StubAiProvider } from "../ai/stubProvider.js";
 import { WarmblyClient } from "../warmbly/client.js";
 import { BridgeOrchestrator } from "./orchestrator.js";
@@ -130,6 +130,7 @@ describe("end-to-end run with stub AI", () => {
       research: new Research(db),
       drafts: new Drafts(db),
       events: new Events(db),
+      sends: new Sends(db),
       warmbly,
       createRuntime: () => stub,
     });

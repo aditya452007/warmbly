@@ -16,6 +16,7 @@ import {
     useRegenerateBridgeDraft,
     useRejectBridgeDraft,
     useSaveBridgeDraft,
+    useSendBridgeDraft,
 } from "@/lib/api/hooks/app/bridge/useBridgeReview";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +33,15 @@ export function draftLabel(status: string): string {
     return status.charAt(0) + status.slice(1).toLowerCase();
 }
 
-export default function ReviewDrawer({ draftId, onClose }: { draftId: string; onClose: () => void }) {
+export default function ReviewDrawer({
+    draftId,
+    onClose,
+    sendMode,
+}: {
+    draftId: string;
+    onClose: () => void;
+    sendMode: string;
+}) {
     const confirm = useConfirm();
     const draftQuery = useBridgeDraft(draftId);
     const [previewOpen, setPreviewOpen] = React.useState(false);
@@ -41,6 +50,10 @@ export default function ReviewDrawer({ draftId, onClose }: { draftId: string; on
     const approve = useApproveBridgeDraft();
     const reject = useRejectBridgeDraft();
     const regenerate = useRegenerateBridgeDraft();
+    const send = useSendBridgeDraft();
+    const [sendOpen, setSendOpen] = React.useState(false);
+    const [recipient, setRecipient] = React.useState("");
+    const [consent, setConsent] = React.useState(false);
 
     const draft = draftQuery.data?.draft;
     const [subject, setSubject] = React.useState<string | null>(null);
@@ -54,7 +67,7 @@ export default function ReviewDrawer({ draftId, onClose }: { draftId: string; on
     }, [draft?.id]);
 
     const dirty = draft != null && subject !== null && body !== null && (subject !== draft.subject || body !== draft.body);
-    const busy = save.isPending || approve.isPending || reject.isPending || regenerate.isPending;
+    const busy = save.isPending || approve.isPending || reject.isPending || regenerate.isPending || send.isPending;
 
     async function onSave() {
         if (!draft || subject === null || body === null) return;
@@ -95,6 +108,17 @@ export default function ReviewDrawer({ draftId, onClose }: { draftId: string; on
             setSubject(null);
             setBody(null);
             toast.success("Draft regenerated");
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : INVALID_BODY);
+        }
+    }
+
+    async function onSend() {
+        if (!draft || !recipient.trim()) return;
+        try {
+            await send.mutateAsync({ id: draft.id, recipient: recipient.trim(), confirmConsent: consent });
+            toast.success(sendMode === "live" ? "Email sent" : "Test email sent");
+            setSendOpen(false);
         } catch (e) {
             toast.error(e instanceof Error ? e.message : INVALID_BODY);
         }
@@ -245,6 +269,81 @@ export default function ReviewDrawer({ draftId, onClose }: { draftId: string; on
                                                 srcDoc={preview.data.html}
                                                 className="w-full h-96 rounded-md border border-slate-200 bg-white"
                                             />
+                                        )}
+                                    </section>
+                                )}
+
+                                {draft.status === "APPROVED" && sendMode !== "disabled" && (
+                                    <section className="rounded-md border border-slate-200 px-3 py-2.5">
+                                        <div className="flex items-center gap-2">
+                                            <h3 className="text-[10px] uppercase tracking-[0.14em] text-slate-400 font-medium">
+                                                Send
+                                            </h3>
+                                            <span className={cn(
+                                                "text-[10px] uppercase tracking-[0.1em] font-medium",
+                                                sendMode === "live" ? "text-red-600" : "text-sky-600",
+                                            )}>
+                                                {sendMode === "live" ? "Live" : "Local test"}
+                                            </span>
+                                        </div>
+                                        {!sendOpen ? (
+                                            <div className="mt-2">
+                                                <TopbarAction variant="ghost" onClick={() => setSendOpen(true)}>
+                                                    {sendMode === "live" ? "Send live" : "Send test"}
+                                                </TopbarAction>
+                                            </div>
+                                        ) : (
+                                            <div className="mt-2 space-y-2">
+                                                <p className="text-[12px] text-slate-700 leading-relaxed">
+                                                    {sendMode === "live"
+                                                        ? "This will send a REAL email. Confirm every detail below."
+                                                        : "This sends a test email through Warmbly into the local sink. Nothing real leaves."}
+                                                </p>
+                                                <dl className="space-y-1 text-[12px]">
+                                                    <div className="flex gap-2">
+                                                        <dt className="w-20 shrink-0 text-slate-400">To</dt>
+                                                        <dd className="text-slate-900 truncate">{recipient || "—"}</dd>
+                                                    </div>
+                                                    <div className="flex gap-2">
+                                                        <dt className="w-20 shrink-0 text-slate-400">Subject</dt>
+                                                        <dd className="text-slate-900 truncate">{draft.subject}</dd>
+                                                    </div>
+                                                    <div className="flex gap-2">
+                                                        <dt className="w-20 shrink-0 text-slate-400">Offers</dt>
+                                                        <dd className="text-slate-900 tabular-nums">{draft.offer_urls.length} fixed URLs</dd>
+                                                    </div>
+                                                </dl>
+                                                <TextInput
+                                                    value={recipient}
+                                                    onChange={setRecipient}
+                                                    placeholder="Recipient email"
+                                                    type="email"
+                                                    aria-label="Recipient email"
+                                                    className="w-full"
+                                                />
+                                                <label className="flex items-start gap-2 text-[12px] text-slate-600">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={consent}
+                                                        onChange={(e) => setConsent(e.target.checked)}
+                                                        className="mt-0.5 size-3.5 accent-sky-600"
+                                                    />
+                                                    <span>Contact consent confirmed for this single send</span>
+                                                </label>
+                                                <div className="flex items-center gap-1.5">
+                                                    <TopbarAction
+                                                        onClick={onSend}
+                                                        disabled={busy || !recipient.trim()}
+                                                        icon={send.isPending ? <Loader2Icon className="w-3 h-3 animate-spin" /> : undefined}
+                                                        className={sendMode === "live" ? "bg-red-600 hover:bg-red-700" : undefined}
+                                                    >
+                                                        {send.isPending ? "Sending…" : sendMode === "live" ? "Send real email" : "Send test email"}
+                                                    </TopbarAction>
+                                                    <TopbarAction variant="ghost" onClick={() => setSendOpen(false)}>
+                                                        Cancel
+                                                    </TopbarAction>
+                                                </div>
+                                            </div>
                                         )}
                                     </section>
                                 )}

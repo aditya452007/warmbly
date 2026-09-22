@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { openBridgeDb, closeDb, type BridgeDb } from "../db.js";
-import { AgentRuns, CampaignRuns, DiscoveryJobs, Drafts, Events, Leads, Research } from "../store/repositories.js";
+import { AgentRuns, CampaignRuns, DiscoveryJobs, Drafts, Events, Leads, Research, Sends } from "../store/repositories.js";
 import { StubAiProvider } from "../ai/stubProvider.js";
 import { WarmblyClient } from "../warmbly/client.js";
 import { BridgeOrchestrator } from "./orchestrator.js";
@@ -56,6 +56,7 @@ function setup() {
     research: new Research(db),
     drafts: new Drafts(db),
     events: new Events(db),
+    sends: new Sends(db),
     warmbly,
   };
   const orchestrator = new BridgeOrchestrator({ ...deps, createRuntime: () => new StubAiProvider([]) });
