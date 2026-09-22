@@ -1,4 +1,4 @@
-import { Body, Button, Container, Head, Hr, Html, Section, Text } from "@react-email/components";
+import { Body, Button, Container, Head, Hr, Html, Section, Text } from "react-email";
 
 // Master outreach shell. The AI contributes NOTHING to this markup: the body
 // arrives as a sentinel replaced post-render with the Warmbly variable, and

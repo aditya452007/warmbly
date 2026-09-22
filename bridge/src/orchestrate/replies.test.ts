@@ -427,6 +427,51 @@ describe("live-cap integration", () => {
   });
 });
 
+describe("response transport safety", () => {
+  it("local mode never answers through the brevo relay", async () => {
+    const fx = setup({ transportName: "brevo" });
+    try {
+      await seedSentInitial(fx);
+      fx.unibox.previews = [{ thread_id: "t-1" }];
+      fx.unibox.threads = { "t-1": [inboundPreview()] };
+      fx.unibox.emails = { "w-1": inboundEmail() };
+      await fx.replies.pollQueueReplies(fx.queueId);
+      const reply = new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0)[0];
+      const draft = await fx.replies.draftResponse(reply.id);
+      await expect(fx.replies.approveResponse(draft.id)).rejects.toThrow(/EMAIL_PROVIDER=local/);
+      expect(new ResponseDrafts(fx.db).get(draft.id)?.status).toBe("BLOCKED");
+      expect(fx.transports.sent).toHaveLength(0);
+    } finally {
+      fx.bulk.shutdown();
+      closeDb(fx.db);
+    }
+  });
+});
+
+describe("poll candidate filtering", () => {
+  it("does not open messages from addresses that merely contain the lead address", async () => {
+    const fx = setup();
+    try {
+      await seedSentInitial(fx);
+      fx.unibox.previews = [{ thread_id: "t-1" }];
+      fx.unibox.threads = {
+        "t-1": [inboundPreview({ id: "w-x", from_addr: ["Someone <notlead1@example.com>"] })],
+      };
+      fx.unibox.emails = {
+        "w-x": inboundEmail({ id: "w-x", from: ["Someone <notlead1@example.com>"] }),
+      };
+      const s = await fx.replies.pollQueueReplies(fx.queueId);
+      expect(s.ingested).toBe(0);
+      // The lookalike was never even opened for a full read.
+      expect(fx.unibox.calls).not.toContain("email:w-x");
+      expect(new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0)).toHaveLength(0);
+    } finally {
+      fx.bulk.shutdown();
+      closeDb(fx.db);
+    }
+  });
+});
+
 describe("post-pump auto-poll", () => {
   it("a bulk pump triggers a bounded reply poll", async () => {
     const fx = setup();

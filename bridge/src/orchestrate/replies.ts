@@ -239,8 +239,10 @@ export class ReplySync {
       const listed = await this.deps.warmbly.getUniboxThread(thread.thread_id);
       const candidates = listed
         .filter((m) => {
-          const from = (m.from_addr ?? []).map((a) => a.trim().toLowerCase()).join(" ");
-          if (!from.includes(address)) return false;
+          // Exact per-address match: a substring test would implicate
+          // "xa@example.com" in a poll for "a@example.com".
+          const senders = (m.from_addr ?? []).map((a) => extractEmail(a));
+          if (!senders.includes(address)) return false;
           const at = m.internal_date ?? null;
           if (at && (!maxSeen || at > maxSeen)) maxSeen = at;
           return !cursor || !at || at > cursor;

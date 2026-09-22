@@ -206,8 +206,10 @@ CREATE TABLE IF NOT EXISTS followup_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_followups_queue ON followup_drafts(queue_id, status);
 
--- Persisted per-day send counters. Restart-safe daily pacing: the count is
--- incremented in the same step that stamps SENT, never recomputed from rows.
+-- Persisted per-day send counters. Slots are reserved atomically (check and
+-- increment in one transaction) right before the provider call and released
+-- when the call fails, so only provider-accepted sends consume the day and
+-- restarts cannot double-count. Never recomputed from rows.
 CREATE TABLE IF NOT EXISTS send_day_counters (
   queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
   day TEXT NOT NULL,

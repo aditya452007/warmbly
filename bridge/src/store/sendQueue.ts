@@ -405,22 +405,6 @@ export class DayCounters {
     ) as unknown as AnyStatement).get(queueId, day) as { count: number } | undefined;
     return row?.count ?? 0;
   }
-
-  // Incremented exactly when a send is provider-accepted, in the same logical
-  // step as the SENT stamp. Never recomputed, so restarts cannot double it.
-  increment(queueId: string, day: string): number {
-    const bump = this.db.transaction((q: string, d: string): number => {
-      (this.db.prepare(
-        `INSERT INTO send_day_counters (queue_id, day, count) VALUES (?, ?, 1)
-         ON CONFLICT(queue_id, day) DO UPDATE SET count = count + 1`,
-      ) as unknown as AnyStatement).run(q, d);
-      const row = (this.db.prepare(
-        "SELECT count FROM send_day_counters WHERE queue_id = ? AND day = ?",
-      ) as unknown as AnyStatement).get(q, d) as { count: number };
-      return row.count;
-    });
-    return bump(queueId, day);
-  }
 }
 
 export class ContactSignals {

@@ -996,12 +996,19 @@ export class BulkSender {
     }
     if (suppressed) throw new GateError("SUPPRESSION", "recipient is on the workspace suppression list");
     const transport = this.deps.getEmailTransport?.();
-    const usable = mode === "live" ? transport?.name === "brevo" : transport?.name === "local" || transport?.name === "brevo";
+    // Local mode is Mailpit-only for responses: accepting the brevo relay
+    // here would send real mail while the operator believes nothing can
+    // leave. Matches the follow-up path, which also refuses anything but
+    // the local transport outside live mode.
+    const usable = mode === "live" ? transport?.name === "brevo" : transport?.name === "local";
     if (!transport || !usable) {
-      throw new GateError("CONFIGURATION", mode === "live" ? "live responses require EMAIL_PROVIDER=brevo" : "local responses need EMAIL_PROVIDER=local (or brevo)");
+      throw new GateError("CONFIGURATION", mode === "live" ? "live responses require EMAIL_PROVIDER=brevo" : "local responses need EMAIL_PROVIDER=local");
     }
     const from = readDefaultFrom(transport);
+    // Live mode needs the approved sender (the relay rejects anything
+    // else); local Mailpit accepts the bridge fallback address.
     const resolvedFrom = from.email ? from : mode === "live" ? { email: "" } : { email: "bridge@localhost", name: "Bridge" };
+    if (!resolvedFrom.email) throw new GateError("CONFIGURATION", "no approved sender address configured");
     if (!resolvedFrom.email) throw new GateError("CONFIGURATION", "no approved sender address configured");
     this.reserveSlot(queue);
     try {
@@ -1263,6 +1270,7 @@ export class BulkSender {
     // what was reviewed; the item becomes due immediately.
     const queue = this.deps.queues.get(row.queue_id);
     if (!queue) throw new Error("send queue missing");
+    if (queue.status === QUEUE_STATUS.CANCELLED) throw new Error("queue is cancelled");
     this.deps.followups.setStatus(followupId, FOLLOWUP_STATUS.APPROVED);
     const item = this.sql("SELECT * FROM send_items WHERE followup_id = ?").get(followupId) as SendItemRow | undefined;
     if (item && (item.status === ITEM_STATUS.QUEUED || item.status === ITEM_STATUS.RETRYABLE)) {
