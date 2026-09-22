@@ -4,7 +4,7 @@ import { loadConfig, type BridgeConfig } from "../config.js";
 import { CampaignRuns, Drafts, Events, Leads, Research, Sends } from "../store/repositories.js";
 import { ContactSignals, DayCounters, FollowupDrafts, SendItems, SendQueues } from "../store/sendQueue.js";
 import { InboundReplies, ReplyPolls, ResponseDrafts } from "../store/replies.js";
-import { WarmblyClient, type UniboxThreadMessage } from "../warmbly/client.js";
+import { WarmblyClient, type UniboxThreadMessage, type UniboxFullMessage } from "../warmbly/client.js";
 import { BulkSender } from "./bulkSend.js";
 import { ReplySync, matchInbound, normalizeMessageId } from "./replies.js";
 import { renderOutreach } from "../email/render.js";
@@ -18,7 +18,7 @@ interface Fixture {
   db: BridgeDb;
   bulk: BulkSender;
   replies: ReplySync;
-  unibox: { threads: Record<string, UniboxThreadMessage[]>; previews: Array<{ thread_id: string }>; calls: string[]; failWith?: number };
+  unibox: { threads: Record<string, UniboxThreadMessage[]>; emails: Record<string, UniboxFullMessage>; previews: Array<{ thread_id: string }>; calls: string[]; failWith?: number };
   transports: { sent: EmailMessage[] };
   ai: { mode: string; calls: number };
   autoPoll: { calls: number };
@@ -58,7 +58,7 @@ function setup(opts: { mode?: string; provider?: string; transportName?: string 
     close: async () => undefined,
     defaultFrom: () => ({ email: "hello@example.com", name: "Bridge" }),
   } as unknown as EmailTransport;
-  const unibox: Fixture["unibox"] = { threads: {}, previews: [], calls: [], failWith: undefined };
+  const unibox: Fixture["unibox"] = { threads: {}, emails: {}, previews: [], calls: [], failWith: undefined };
   const warmbly = {
     isSuppressed: async () => false,
     lookupContactByEmail: async () => ({ id: "c1" }),
@@ -75,6 +75,12 @@ function setup(opts: { mode?: string; provider?: string; transportName?: string 
     getUniboxThread: async (threadId: string) => {
       unibox.calls.push(`thread:${threadId}`);
       return unibox.threads[threadId] ?? [];
+    },
+    getUniboxEmail: async (id: string) => {
+      unibox.calls.push(`email:${id}`);
+      const full = unibox.emails[id];
+      if (!full) throw new Error(`no such message ${id}`);
+      return full;
     },
   } as unknown as WarmblyClient;
   const ai: Fixture["ai"] = { mode: opts.aiMode ?? "positive", calls: 0 };
@@ -170,13 +176,21 @@ async function seedSentInitial(fx: Fixture, n = 1, messageId = INIT_ID): Promise
   fx.db.prepare("UPDATE send_items SET status = 'SENT', provider_message_id = ?, sent_at = ? WHERE id = ?").run(messageId, new Date().toISOString(), `item-${n}`);
 }
 
-function inboundMsg(overrides: Partial<UniboxThreadMessage> = {}): UniboxThreadMessage {
+function inboundPreview(overrides: Partial<UniboxThreadMessage> = {}): UniboxThreadMessage {
   return {
     id: "w-1", thread_id: "t-1", from_addr: ["lead1@example.com"], to_addr: ["hello@example.com"],
-    subject: "Re: Hello Shop 1", snippet: "Sounds good", body_text: "Sounds good, send pricing please.",
-    message_id: "<reply-1@mail.test>", in_reply_to: [INIT_ID], internal_date: "2026-09-22T10:00:00Z",
+    subject: "Re: Hello Shop 1", snippet: "Sounds good", internal_date: "2026-09-22T10:00:00Z",
     ...overrides,
   } as UniboxThreadMessage;
+}
+
+function inboundEmail(overrides: Partial<UniboxFullMessage> = {}): UniboxFullMessage {
+  return {
+    id: "w-1", thread_id: "t-1", from: ["lead1@example.com"], to: ["hello@example.com"],
+    subject: "Re: Hello Shop 1", body_plain: "Sounds good, send pricing please.",
+    message_id: "<reply-1@mail.test>", in_reply_to: [INIT_ID], internal_date: "2026-09-22T10:00:00Z",
+    ...overrides,
+  } as UniboxFullMessage;
 }
 
 describe("thread matching", () => {
@@ -197,7 +211,8 @@ describe("reply polling", () => {
     try {
       await seedSentInitial(fx);
       fx.unibox.previews = [{ thread_id: "t-1" }];
-      fx.unibox.threads = { "t-1": [inboundMsg()] };
+      fx.unibox.threads = { "t-1": [inboundPreview()] };
+      fx.unibox.emails = { "w-1": inboundEmail() };
       const s1 = await fx.replies.pollQueueReplies(fx.queueId);
       expect(s1.ingested).toBe(1);
       expect(s1.analyzed).toBe(1);
@@ -223,8 +238,12 @@ describe("reply polling", () => {
       await seedSentInitial(fx);
       fx.unibox.previews = [{ thread_id: "t-own" }, { thread_id: "t-other" }];
       fx.unibox.threads = {
-        "t-own": [inboundMsg({ id: "w-own", from_addr: ["hello@example.com"], message_id: "<echo@bridge.test>", in_reply_to: [INIT_ID] })],
-        "t-other": [inboundMsg({ id: "w-other", from_addr: ["lead1@example.com"], message_id: "<x@mail>", in_reply_to: ["<unknown@mail>"], thread_id: "t-other" })],
+        "t-own": [inboundPreview({ id: "w-own", thread_id: "t-own", from_addr: ["hello@example.com"] })],
+        "t-other": [inboundPreview({ id: "w-other", thread_id: "t-other" })],
+      };
+      fx.unibox.emails = {
+        "w-own": inboundEmail({ id: "w-own", thread_id: "t-own", from: ["hello@example.com"], message_id: "<echo@bridge.test>" }),
+        "w-other": inboundEmail({ id: "w-other", thread_id: "t-other", message_id: "<x@mail>", in_reply_to: ["<unknown@mail>"] }),
       };
       const s = await fx.replies.pollQueueReplies(fx.queueId);
       expect(s.ingested).toBe(0);
@@ -258,7 +277,8 @@ describe("reply analysis", () => {
     try {
       await seedSentInitial(fx);
       fx.unibox.previews = [{ thread_id: "t-1" }];
-      fx.unibox.threads = { "t-1": [inboundMsg({ body_text: "Remove me from your list." })] };
+      fx.unibox.threads = { "t-1": [inboundPreview()] };
+      fx.unibox.emails = { "w-1": inboundEmail({ body_plain: "Remove me from your list." }) };
       await fx.replies.pollQueueReplies(fx.queueId);
       expect(new ContactSignals(fx.db).has(fx.queueId, "lead1@example.com", "unsubscribed")).toBe(true);
       const rows = new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0);
@@ -274,7 +294,8 @@ describe("response drafting policy", () => {
   async function polledPositive(fx: Fixture) {
     await seedSentInitial(fx);
     fx.unibox.previews = [{ thread_id: "t-1" }];
-    fx.unibox.threads = { "t-1": [inboundMsg()] };
+    fx.unibox.threads = { "t-1": [inboundPreview()] };
+    fx.unibox.emails = { "w-1": inboundEmail() };
     await fx.replies.pollQueueReplies(fx.queueId);
     return new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0)[0];
   }
@@ -392,7 +413,8 @@ describe("live-cap integration", () => {
       // Queue cap is 3; burn it with SENT brevo rows.
       fx.db.prepare("UPDATE send_queues SET max_live_sends = 0 WHERE id = ?").run(fx.queueId);
       fx.unibox.previews = [{ thread_id: "t-1" }];
-      fx.unibox.threads = { "t-1": [inboundMsg()] };
+      fx.unibox.threads = { "t-1": [inboundPreview()] };
+      fx.unibox.emails = { "w-1": inboundEmail() };
       await fx.replies.pollQueueReplies(fx.queueId);
       const reply = new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0)[0];
       const draft = await fx.replies.draftResponse(reply.id);

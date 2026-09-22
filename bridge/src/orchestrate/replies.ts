@@ -18,7 +18,7 @@ import {
   type InboundReplyRow,
   type ResponseDraftRow,
 } from "../store/replies.js";
-import type { WarmblyClient, UniboxThreadMessage } from "../warmbly/client.js";
+import type { WarmblyClient, UniboxThreadMessage, UniboxFullMessage } from "../warmbly/client.js";
 import { GateError } from "./bulkSend.js";
 
 export interface ReplySyncDeps {
@@ -70,7 +70,7 @@ export function normalizeMessageId(value: string | null | undefined): string | n
 }
 
 export function normalizeUniboxMessage(m: UniboxThreadMessage): NormalizedInbound {
-  const from = (m.from_addr ?? []).map((a) => a.trim().toLowerCase()).find((a) => a.includes("@")) ?? "";
+  const from = (m.from_addr ?? []).map((a) => extractEmail(a)).find((a) => a.includes("@")) ?? "";
   return {
     key: `warmbly:${m.id}`,
     warmblyId: m.id,
@@ -81,6 +81,27 @@ export function normalizeUniboxMessage(m: UniboxThreadMessage): NormalizedInboun
     bodyText: m.body_text ?? m.snippet ?? "",
     receivedAt: m.internal_date ?? null,
   };
+}
+
+// Full-message shape (GET /unibox/:id): different field names from the list
+// rows, plus real bodies. Addresses may carry display names ("A <a@b>").
+export function normalizeUniboxFull(m: UniboxFullMessage): NormalizedInbound {
+  const from = (m.from ?? []).map((a) => extractEmail(a)).find((a) => a.includes("@")) ?? "";
+  return {
+    key: `warmbly:${m.id}`,
+    warmblyId: m.id,
+    rfcMessageId: m.message_id ?? null,
+    threadId: m.thread_id ?? null,
+    fromEmail: from,
+    subject: m.subject ?? "",
+    bodyText: m.body_plain ?? m.snippet ?? "",
+    receivedAt: m.internal_date ?? null,
+  };
+}
+
+function extractEmail(raw: string): string {
+  const angled = raw.match(/<([^>]+)>/);
+  return (angled ? angled[1] : raw).trim().toLowerCase();
 }
 
 // Pure thread matching: the sender must be the lead, and the message must
@@ -118,6 +139,10 @@ export function matchAncestry(msg: Pick<NormalizedInbound, "rfcMessageId" | "thr
 // Minimum analysis confidence before a response may be drafted without an
 // explicit operator instruction. Below it the reply waits for a human read.
 const RESPONSE_CONFIDENCE_MIN = 0.5;
+
+// Full-message opens per thread per poll. Threads can be long; only
+// lead-sent messages newer than the cursor are ever opened.
+const REPLY_THREAD_OPEN_MAX = 10;
 
 function utcNow(): string {
   return new Date().toISOString();
@@ -207,11 +232,24 @@ export class ReplySync {
     const sentIds = this.sentMessageIds(queue.id);
     let maxSeen = cursor;
     for (const thread of threads) {
-      const messages = await this.deps.warmbly.getUniboxThread(thread.thread_id);
-      for (const raw of messages) {
-        const msg = normalizeUniboxMessage(raw);
-        if (msg.receivedAt && (!maxSeen || msg.receivedAt > maxSeen)) maxSeen = msg.receivedAt;
-        const matched = this.isThreadReply(msg, raw.in_reply_to ?? [], address, sentIds);
+      // Thread rows carry no ancestry or bodies, so candidates (lead-sent,
+      // newer than the cursor) are opened individually for the full read.
+      // Opening marks read in Warmbly by design; only implicated messages
+      // are opened, never whole threads.
+      const listed = await this.deps.warmbly.getUniboxThread(thread.thread_id);
+      const candidates = listed
+        .filter((m) => {
+          const from = (m.from_addr ?? []).map((a) => a.trim().toLowerCase()).join(" ");
+          if (!from.includes(address)) return false;
+          const at = m.internal_date ?? null;
+          if (at && (!maxSeen || at > maxSeen)) maxSeen = at;
+          return !cursor || !at || at > cursor;
+        })
+        .slice(0, REPLY_THREAD_OPEN_MAX);
+      for (const preview of candidates) {
+        const full = await this.deps.warmbly.getUniboxEmail(preview.id);
+        const msg = normalizeUniboxFull(full);
+        const matched = this.isThreadReply(msg, full.in_reply_to ?? [], address, sentIds);
         if (!matched) continue;
         const { duplicate, id } = this.deps.replies.insert({
           id: randomUUID(),

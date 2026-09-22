@@ -293,6 +293,16 @@ export class WarmblyClient {
       .parse(data);
     return parsed.data ?? [];
   }
+
+  // Full single-message read (message_id, in_reply_to, bodies). The thread
+  // list deliberately omits these, so reply matching fetches candidates here.
+  // Side effect, by Warmbly's design: opening marks the message read and
+  // relays that state to the mailbox. The poller only opens messages whose
+  // sender and date already implicate them as replies.
+  async getUniboxEmail(id: string): Promise<UniboxFullMessage> {
+    const data = await this.request<unknown>("GET", `/unibox/${encodeURIComponent(id)}`);
+    return UniboxFullMessageSchema.parse(data);
+  }
 }
 
 const UniboxThreadPreviewSchema = z
@@ -326,3 +336,21 @@ const UniboxThreadMessageSchema = z
   .passthrough();
 
 export interface UniboxThreadMessage extends z.infer<typeof UniboxThreadMessageSchema> {}
+
+const UniboxFullMessageSchema = z
+  .object({
+    id: z.string(),
+    thread_id: z.string().optional(),
+    from: z.array(z.string()).optional(),
+    to: z.array(z.string()).optional(),
+    subject: z.string().optional(),
+    snippet: z.string().optional(),
+    body_plain: z.string().optional(),
+    body_html: z.string().optional(),
+    message_id: z.string().optional(),
+    in_reply_to: z.array(z.string()).optional(),
+    internal_date: z.string().optional(),
+  })
+  .passthrough();
+
+export interface UniboxFullMessage extends z.infer<typeof UniboxFullMessageSchema> {}
