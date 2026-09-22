@@ -250,3 +250,72 @@ describe("journal mode", () => {
     }
   });
 });
+
+describe("crash recovery", () => {
+  function seedLead(db: BridgeDb, id: string, status: string): Leads {
+    const leads = new Leads(db);
+    leads.insert({
+      id,
+      campaignRunId: "run-1",
+      identity: `domain:${id}.example`,
+      businessName: id,
+      website: `https://${id}.example`,
+      email: `${id}@example.com`,
+      sourceUrls: [`https://maps.example/${id}`],
+      status,
+    });
+    return leads;
+  }
+
+  it("resets transient lead states to resting states", () => {
+    const db = openBridgeDb(":memory:");
+    try {
+      seedRun(db);
+      const leads = seedLead(db, "researching", "RESEARCHING");
+      seedLead(db, "personalizing", "PERSONALIZING");
+      seedLead(db, "qualified", "QUALIFIED");
+      expect(leads.resetStuck("run-1")).toBe(2);
+      expect(leads.get("researching")?.status).toBe("DISCOVERED");
+      expect(leads.get("personalizing")?.status).toBe("QUALIFIED");
+      expect(leads.get("qualified")?.status).toBe("QUALIFIED");
+      expect(leads.resetStuck("run-1")).toBe(0);
+    } finally {
+      closeDb(db);
+    }
+  });
+
+  it("reports unfinished work", () => {    const db = openBridgeDb(":memory:");
+    try {
+      seedRun(db);
+      const leads = new Leads(db);
+      expect(leads.hasUnfinishedWork("run-1")).toBe(false);
+      seedLead(db, "d1", "DISCOVERED");
+      expect(leads.hasUnfinishedWork("run-1")).toBe(true);
+      const row = leads.get("d1");
+      if (row) leads.setStatus(row.id, "SYNCED_TO_WARMBLY");
+      expect(leads.hasUnfinishedWork("run-1")).toBe(false);
+    } finally {
+      closeDb(db);
+    }
+  });
+
+  it("tracks job leases so crashes become retryable", () => {
+    const db = openBridgeDb(":memory:");
+    try {
+      seedRun(db);
+      const jobs = new DiscoveryJobs(db);
+      jobs.enqueue({ id: "job-1", campaignRunId: "run-1", payload: "{}" });
+      expect(jobs.pendingCount("run-1")).toBe(1);
+      // A lease far in the past is claimable; a fresh one is not.
+      jobs.start("job-1", new Date(Date.now() - 1000).toISOString());
+      expect(jobs.claimStale(new Date().toISOString())).toHaveLength(1);
+      expect(jobs.pendingCount("run-1")).toBe(1);
+      jobs.start("job-1", new Date(Date.now() + 600_000).toISOString());
+      expect(jobs.claimStale(new Date().toISOString())).toHaveLength(0);
+      jobs.extendLease("job-1", new Date(Date.now() - 1000).toISOString());
+      expect(jobs.claimStale(new Date().toISOString())).toHaveLength(1);
+    } finally {
+      closeDb(db);
+    }
+  });
+});

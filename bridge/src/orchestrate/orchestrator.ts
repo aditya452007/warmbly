@@ -97,16 +97,21 @@ export class BridgeOrchestrator {
         }));
   }
 
-  // Crash recovery: expired leases become retryable, stale agents fail, runs
-  // with pending work resume from persisted rows (every stage is idempotent).
+  // Crash recovery: expired leases become retryable, stale agents fail,
+  // in-flight leads return to resting states, and runs with unfinished work
+  // resume from persisted rows (every stage is idempotent). Returns resumed
+  // run ids.
   recover(): string[] {
     const now = utcNow();
+    const touched = new Set<string>();
     const retried = this.jobs.claimStale(now);
     for (const job of retried) {
+      touched.add(job.campaign_run_id);
       this.events.append({ kind: "job.retry_scheduled", campaignRunId: job.campaign_run_id, jobId: job.id });
     }
     const staleAgents = this.agents.findStale(now, LEASE_SECONDS);
     for (const agent of staleAgents) {
+      touched.add(agent.campaign_run_id);
       this.agents.finish(agent.id, "FAILED", "lease expired without heartbeat (bridge restarted or crashed)");
       this.events.append({
         kind: "agent.failed",
@@ -115,7 +120,28 @@ export class BridgeOrchestrator {
         message: "stale lease recovered",
       });
     }
-    return retried.map((j) => j.campaign_run_id);
+    const resumed: string[] = [];
+    const maybeResume = (runId: string) => {
+      if (resumed.includes(runId)) return;
+      const reset = this.leads.resetStuck(runId);
+      const run = this.runs.get(runId);
+      if (!run) return;
+      const active = ["CREATED", "DISCOVERING", "RESEARCHING", "PERSONALIZING", "WAITING_FOR_AI"].includes(run.status);
+      if (active && (reset > 0 || this.leads.hasUnfinishedWork(runId) || this.jobs.pendingCount(runId) > 0)) {
+        resumed.push(runId);
+        void this.execute(runId).catch((err) => {
+          log("error", "resumed run failed", {
+            campaignId: runId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+    };
+    for (const runId of touched) maybeResume(runId);
+    // Runs with unfinished work but no stale leases (e.g. work died with the
+    // process mid-stage) would otherwise sit frozen forever.
+    for (const row of this.runs.listResumable()) maybeResume(row.id);
+    return resumed;
   }
 
   async shutdown(): Promise<void> {
@@ -133,6 +159,16 @@ export class BridgeOrchestrator {
 
   get shutting(): boolean {
     return this.shuttingDown;
+  }
+
+  // Operator-pinned model forwarded verbatim to the runtime, if configured.
+  // Tolerant of partial configs (tests): unset or malformed means default.
+  private modelOpt(): { providerID: string; modelID: string } | undefined {
+    const raw = typeof this.config.OPENCODE_MODEL === "string" ? this.config.OPENCODE_MODEL.trim() : "";
+    if (!raw) return undefined;
+    const slash = raw.indexOf("/");
+    if (slash <= 0 || slash === raw.length - 1) return undefined;
+    return { providerID: raw.slice(0, slash), modelID: raw.slice(slash + 1) };
   }
 
   async pingWarmbly(): Promise<boolean> {
@@ -235,9 +271,12 @@ export class BridgeOrchestrator {
     this.agents.create({ id: agentId, campaignRunId: runId, agentNumber, lane: lane.id });
     this.jobs.enqueue({ id: jobId, campaignRunId: runId, agentRunId: agentId, payload: JSON.stringify({ lane: lane.id }) });
     this.activeJobs.add(jobId);
+    const leaseUntil = () => new Date(Date.now() + LEASE_SECONDS * 1000).toISOString();
+    this.jobs.start(jobId, leaseUntil());
     const beat = setInterval(() => {
       try {
         this.agents.heartbeat(agentId);
+        this.jobs.extendLease(jobId, leaseUntil());
       } catch {
         // Heartbeat is best effort; lease expiry recovers a dead worker.
       }
@@ -253,7 +292,10 @@ export class BridgeOrchestrator {
         this.jobs.fail(jobId, "run cancelled", false);
         return { found, duplicates };
       }
-      const discovery = new OpenCodeDiscoveryProvider(runtime, { timeoutMs: this.config.AI_JOB_TIMEOUT_MS });
+      const discovery = new OpenCodeDiscoveryProvider(runtime, {
+        timeoutMs: this.config.AI_JOB_TIMEOUT_MS,
+        model: this.modelOpt(),
+      });
       const wire = await discovery.discover({
         businessType: run.businessType,
         location: run.location,
@@ -366,6 +408,12 @@ export class BridgeOrchestrator {
     };
     const pVersion = promptVersion();
     const runtime = this.createRuntime(this.config.AI_PROVIDER);
+    const model = this.modelOpt();
+    log("info", "run executing", {
+      campaignId: runId,
+      provider: this.config.AI_PROVIDER,
+      model: model ? `${model.providerID}/${model.modelID}` : "server-default",
+    });
 
     // Dependency gates before any AI session: Warmbly reachable first, then
     // the AI provider. A down provider parks the run instead of failing it.
@@ -383,12 +431,18 @@ export class BridgeOrchestrator {
           prompt: "Reply with exactly: ok",
           timeoutMs: 30_000,
           title: "provider-probe",
+          model: this.modelOpt(),
         });
         if (ping.sessionId) this.trackSession(ping.sessionId);
         providerReady = ping.ok;
         if (providerReady) break;
-      } catch {
+      } catch (err) {
         providerReady = false;
+        log("warn", "provider probe failed", {
+          campaignId: runId,
+          attempt,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       if (!providerReady && attempt <= this.config.AI_RETRY_ATTEMPTS) {
         this.runs.setStatus(runId, "WAITING_FOR_AI");
@@ -514,6 +568,7 @@ export class BridgeOrchestrator {
           prompt: built.text,
           timeoutMs: this.config.AI_JOB_TIMEOUT_MS,
           title: `research:${lead.id}`,
+          model: this.modelOpt(),
         },
         ResearchSchema,
       );
@@ -574,6 +629,7 @@ export class BridgeOrchestrator {
           prompt: built.text,
           timeoutMs: this.config.AI_JOB_TIMEOUT_MS,
           title: `personalize:${lead.id}`,
+          model: this.modelOpt(),
         },
         OutreachSchema,
       );

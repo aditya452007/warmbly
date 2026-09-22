@@ -106,14 +106,6 @@ function extractJsonCandidate(text: string): unknown {
   return JSON.parse(trimmed);
 }
 
-function toJsonSchema(schema: z.ZodType<unknown>): Record<string, unknown> | undefined {
-  try {
-    return z.toJSONSchema(schema) as unknown as Record<string, unknown>;
-  } catch {
-    return undefined;
-  }
-}
-
 function timeoutError(): Error {
   return Object.assign(new Error("AI timeout"), { code: "AI_TIMEOUT" });
 }
@@ -130,7 +122,21 @@ export class OpenCodeAiProvider implements AgentRuntime {
       this.client = clientFactory(deps);
     } else {
       const baseUrl = deps.baseUrl ?? "http://127.0.0.1:4096";
-      this.client = createOpencodeClient({ baseUrl }) as unknown as SessionClientLike;
+      // Self-hosted `opencode serve` instances require HTTP basic auth when
+      // OPENCODE_SERVER_PASSWORD is set. The SDK accepts a custom fetch, so
+      // credentials ride the transport and never enter prompts or logs.
+      const username = deps.username ?? "";
+      const password = deps.password ?? "";
+      const authedFetch =
+        username || password
+          ? (async (...args: Parameters<typeof fetch>): Promise<Response> => {
+              const [url, init] = args;
+              const headers: Record<string, string> = { ...((init?.headers as Record<string, string> | undefined) ?? {}) };
+              headers.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+              return fetch(url, { ...init, headers });
+            })
+          : undefined;
+      this.client = createOpencodeClient({ baseUrl, ...(authedFetch ? { fetch: authedFetch } : {}) }) as unknown as SessionClientLike;
     }
   }
 
@@ -241,15 +247,16 @@ export class OpenCodeAiProvider implements AgentRuntime {
       if (this.aborted.has(sessionId)) {
         return this.fail<T>("ai_aborted", sessionId, started, opts, 0);
       }
-      const jsonSchema = toJsonSchema(schema as z.ZodType<unknown>);
+      const jsonOrder = "Reply with ONLY the requested JSON. No prose, no fences, no commentary.";
       const body: Record<string, unknown> = {
         system: opts.systemPrompt,
-        parts: [{ type: "text", text: opts.prompt }],
+        // NOTE: no `format: json_schema` is sent. OpenCode 1.18.26 stores the
+        // format on the user message but then fails to read that session back
+        // (GET messages 400s on its own retryCount default) and the model
+        // answers constrained decoding with an empty reply. A direct JSON-only
+        // instruction returns exact JSON, validated below with one repair.
+        parts: [{ type: "text", text: `${opts.prompt}\n\n${jsonOrder}` }],
       };
-      if (opts.model) body.model = { providerID: opts.model.providerID, modelID: opts.model.modelID };
-      if (jsonSchema !== undefined) {
-        body.format = { type: "json_schema", schema: jsonSchema };
-      }
       const first = await this.withDeadline(deadline, onExpire, () =>
         this.client.session.prompt({
           path: { id: sessionId },
@@ -276,9 +283,6 @@ export class OpenCodeAiProvider implements AgentRuntime {
         parts: [{ type: "text", text: repairText }],
       };
       if (opts.model) retryBody.model = { providerID: opts.model.providerID, modelID: opts.model.modelID };
-      if (jsonSchema !== undefined) {
-        retryBody.format = { type: "json_schema", schema: jsonSchema };
-      }
       const second = await this.withDeadline(deadline, onExpire, () =>
         this.client.session.prompt({
           path: { id: sessionId },

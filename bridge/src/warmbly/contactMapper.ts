@@ -39,6 +39,11 @@ export function mapLeadToContact(
     last_name: "",
     email: lead.email,
     company: lead.businessName,
+    // Scraped cold leads have given no marketing consent. Warmbly defaults
+    // omitted subscribed to true (internal/models/contact.go), which would
+    // mark non-consented prospects emailable, so opt them out explicitly.
+    // The sending phase must decide consent handling before mailing them.
+    subscribed: false,
     ...(lead.phone ? { phone: lead.phone } : {}),
     custom_fields: {
       website: lead.website ?? "",

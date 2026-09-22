@@ -155,6 +155,16 @@ export class CampaignRuns {
     return this.getStmt.get(id) as CampaignRunRow | undefined;
   }
 
+  // Runs that may hold unfinished work after a crash: anything not in a
+  // terminal, paused, or cancelled state.
+  listResumable(): CampaignRunRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM campaign_runs WHERE status IN ('CREATED','DISCOVERING','RESEARCHING','PERSONALIZING','WAITING_FOR_AI') ORDER BY created_at ASC`,
+      )
+      .all() as CampaignRunRow[];
+  }
+
   // Omitting errorMessage leaves the previous message untouched.
   setStatus(id: string, status: string, errorMessage?: string): void {
     this.setStatusStmt.run(status, errorMessage ?? null, utcNow(), id);
@@ -345,6 +355,20 @@ export class DiscoveryJobs {
     this.insertStmt.run(job.id, job.campaignRunId, job.agentRunId ?? null, JOB_STATUS.QUEUED, job.payload);
   }
 
+  // A worker owns the job from here until complete/fail: crash recovery
+  // (claimStale) only ever sees leases this method wrote.
+  start(id: string, leaseUntil: string): void {
+    this.db
+      .prepare("UPDATE discovery_jobs SET status = ?, lease_until = ?, updated_at = ? WHERE id = ?")
+      .run(JOB_STATUS.RUNNING, leaseUntil, utcNow(), id);
+  }
+
+  extendLease(id: string, leaseUntil: string): void {
+    this.db
+      .prepare("UPDATE discovery_jobs SET lease_until = ?, updated_at = ? WHERE id = ? AND status = ?")
+      .run(leaseUntil, utcNow(), id, JOB_STATUS.RUNNING);
+  }
+
   // Re-queues expired RUNNING leases and returns the jobs as re-queued.
   claimStale(nowIso: string): DiscoveryJobRow[] {
     const claim = this.db.transaction((now: string): DiscoveryJobRow[] => {
@@ -508,6 +532,27 @@ export class Leads {
 
   getSyncPending(runId: string, limit: number): LeadRow[] {
     return this.syncPendingStmt.all(runId, limit) as LeadRow[];
+  }
+
+  // Crash recovery: transient in-flight states return to their resting
+  // state (RESEARCHING came only from DISCOVERED; PERSONALIZING only from
+  // QUALIFIED). Returns the number of rows reset.
+  resetStuck(runId: string): number {
+    const info = this.db
+      .prepare(
+        `UPDATE leads SET status = CASE status WHEN 'RESEARCHING' THEN 'DISCOVERED' WHEN 'PERSONALIZING' THEN 'QUALIFIED' ELSE status END, updated_at = ? WHERE campaign_run_id = ? AND status IN ('RESEARCHING', 'PERSONALIZING')`,
+      )
+      .run(utcNow(), runId);
+    return Number(info.changes);
+  }
+
+  hasUnfinishedWork(runId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM leads WHERE campaign_run_id = ? AND status IN ('DISCOVERED', 'RESEARCHING', 'QUALIFIED', 'PERSONALIZING', 'PERSONALIZED', 'RENDERED')`,
+      )
+      .get(runId) as { n: number };
+    return row.n > 0;
   }
 
   listByRun(runId: string, limit: number, offset: number): LeadRow[] {

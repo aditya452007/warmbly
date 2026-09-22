@@ -8,6 +8,7 @@ import {
   normalizeEmail,
   OutreachSchema,
   redactSecrets,
+  ResearchSchema,
   RunRequestSchema,
 } from "./validate.js";
 
@@ -70,6 +71,28 @@ describe("schemas", () => {
     expect(OutreachSchema.safeParse({ subject: "a\r\nb", body: "hi" }).success).toBe(false);
     expect(OutreachSchema.safeParse({ subject: "ok", body: "" }).success).toBe(false);
     expect(OutreachSchema.safeParse({ subject: "ok", body: "x".repeat(4001) }).success).toBe(false);
+  });
+});
+
+describe("research tolerance", () => {
+  it("accepts model-shaped pain points and facts", () => {
+    const parsed = ResearchSchema.safeParse({
+      summary: "Family-run shop.",
+      pain_points: ["Slow booking", { pain_point: "Stale blog", evidence: " newest 2019" }],
+      facts: [
+        { claim: "Address observed", source_url: "https://x.example/" },
+        { fact: "Phone observed", source: "https://x.example/contact" },
+        { wrong: "shape" },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.pain_points).toEqual(["Slow booking", "Stale blog"]);
+      expect(parsed.data.facts).toEqual([
+        { claim: "Address observed", sourceUrl: "https://x.example/" },
+        { claim: "Phone observed", sourceUrl: "https://x.example/contact" },
+      ]);
+    }
   });
 });
 

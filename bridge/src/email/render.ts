@@ -37,7 +37,7 @@ function assertSafe(html: string, offers: [string, string, string]): void {
   }
   const unexpected = html
     .match(/\{\{[^}]*\}\}/g)
-    ?.filter((m) => m !== AI_BODY_VAR && m !== "{{.first_name}}");
+    ?.filter((m) => m !== AI_BODY_VAR && m !== "{{.FirstName}}");
   if (unexpected && unexpected.length > 0) {
     throw new RenderError(`unexpected placeholder: ${unexpected[0]}`);
   }

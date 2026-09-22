@@ -20,7 +20,7 @@ describe("renderOutreach", () => {
     expect(out.stepHtml).toContain("Warmbly Outreach");
     expect(out.stepHtml).toContain("Best regards");
     // Greeting + variable in position, AI text only escaped in snapshot.
-    expect(out.stepHtml).toContain("Hi {{.first_name}},");
+    expect(out.stepHtml).toContain("Hi {{.FirstName}},");
     expect(out.stepHtml).toContain("{{.ai_body}}");
     expect(out.stepHtml).not.toContain("four clicks");
     expect(out.snapshot).toContain("four clicks");
@@ -29,7 +29,7 @@ describe("renderOutreach", () => {
     expect(out.stepHtml).not.toMatch(/https?:\/\/[^\s"']*ai-/i);
     // No raw AI HTML, no sentinels, no unexpected placeholders.
     expect(out.stepHtml).not.toContain("__WARMBLY_");
-    expect(out.stepHtml.match(/\{\{[^}]*\}\}/g)?.sort()).toEqual(["{{.ai_body}}", "{{.first_name}}"]);
+    expect(out.stepHtml.match(/\{\{[^}]*\}\}/g)?.sort()).toEqual(["{{.FirstName}}", "{{.ai_body}}"]);
     expect(out.stepHtml).not.toMatch(/<script|<iframe|javascript:/i);
     expect(out.stepHtml.length).toBeLessThan(100_000);
   });

@@ -3,8 +3,12 @@ import { Body, Button, Container, Head, Hr, Html, Section, Text } from "@react-e
 // Master outreach shell. The AI contributes NOTHING to this markup: the body
 // arrives as a sentinel replaced post-render with the Warmbly variable, and
 // the three offer URLs arrive verbatim from campaign configuration.
+// Warmbly renders templates with Go text/template against capitalized keys
+// (internal/tasks/template.go: FirstName, Company, ... plus custom fields by
+// exact key, missingkey=zero). Lowercase {{.first_name}} would render EMPTY,
+// so the greeting uses the exact {{.FirstName}} standard variable.
 export const BODY_SENTINEL = "__WARMBLY_AI_BODY__";
-export const FIRST_NAME_VAR = "{{.first_name}}";
+export const FIRST_NAME_VAR = "{{.FirstName}}";
 export const AI_BODY_VAR = "{{.ai_body}}";
 
 export interface OutreachTemplateProps {

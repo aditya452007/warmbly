@@ -15,25 +15,25 @@ export const DEFAULT_LANES: Lane[] = [
     id: "maps-local",
     label: "Google Maps / local business discovery",
     guidance:
-      "Prioritize map listings and local packs for the area; prefer businesses showing a street address and recent local reviews.",
+      "Search map listings and local packs for the trade and area (try several map-query phrasings). Open each listing, then scrape the linked official website for contact details. Treat aggregator data as hints only.",
   },
   {
     id: "organic-search",
     label: "Organic web search",
     guidance:
-      "Use varied natural search phrasings for the service and city; prefer official business sites over aggregators.",
+      "Use varied natural search phrasings for the service and city; prefer official business sites over aggregators. Fetch candidate sites and extract published contact details verbatim.",
   },
   {
     id: "directories",
-    label: "Business directories",
+    label: "Business directories and registries",
     guidance:
-      "Mine reputable local directories and review listings; cross-check each name against its own site before keeping it.",
+      "Mine reputable local directories, review listings, and industry registries for the trade and area. Cross-check every candidate against its own official site before keeping it; drop stale or mismatched entries.",
   },
   {
     id: "query-variations",
     label: "Query variations",
     guidance:
-      "Rephrase the service with synonyms and neighboring areas; keep only businesses that still match the target trade and place.",
+      "Rephrase the service with synonyms, neighboring areas, and long-tail queries (e.g. 'family-run', 'near <landmark>'). Keep only businesses that still match the target trade and place after verification.",
   },
 ];
 
@@ -61,10 +61,12 @@ const DEFAULT_DISCOVERY_TIMEOUT_MS = 120_000;
 export class OpenCodeDiscoveryProvider implements LeadDiscoveryProvider {
   private readonly runtime: AgentRuntime;
   private readonly timeoutMs: number;
+  private readonly model?: { providerID: string; modelID: string };
 
-  constructor(runtime: AgentRuntime, opts?: { timeoutMs?: number }) {
+  constructor(runtime: AgentRuntime, opts?: { timeoutMs?: number; model?: { providerID: string; modelID: string } }) {
     this.runtime = runtime;
     this.timeoutMs = opts?.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
+    this.model = opts?.model;
   }
 
   async discover(ctx: DiscoveryCtx): Promise<LeadWire[]> {
@@ -83,6 +85,7 @@ export class OpenCodeDiscoveryProvider implements LeadDiscoveryProvider {
         prompt: built.text,
         timeoutMs: this.timeoutMs,
         title: `discovery:${ctx.lane.id}`,
+        ...(this.model ? { model: this.model } : {}),
       },
       arraySchema,
     );

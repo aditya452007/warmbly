@@ -12,6 +12,17 @@ const ConfigSchema = z.object({
   OPENCODE_BASE_URL: z.string().url().default("http://127.0.0.1:4096"),
   OPENCODE_SERVER_USERNAME: z.string().default(""),
   OPENCODE_SERVER_PASSWORD: z.string().default(""),
+  // Optional model pin as "provider/model" (e.g. opencode/big-pickle).
+  // Empty means the server default. Malformed values fail fast: silently
+  // falling back to the server default would bill or behave unexpectedly.
+  OPENCODE_MODEL: z
+    .string()
+    .default("")
+    .refine((s) => {
+      if (!s.trim()) return true;
+      const slash = s.indexOf("/");
+      return slash > 0 && slash < s.trim().length - 1;
+    }, "must be empty or provider/model"),
   DEFAULT_PARALLEL_AGENTS: z.coerce.number().int().min(1).max(16).default(4),
   MAX_PARALLEL_AGENTS: z.coerce.number().int().min(1).max(16).default(16),
   DEFAULT_LEAD_TARGET: z.coerce.number().int().min(1).default(50),
