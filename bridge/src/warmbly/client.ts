@@ -164,8 +164,13 @@ export class WarmblyClient {
     return StepSchema.parse(data);
   }
 
-  async updateStep(campaignId: string, stepId: string, patch: { subject: string; bodyHtml: string }): Promise<void> {
+  async updateStep(
+    campaignId: string,
+    stepId: string,
+    patch: { subject: string; bodyHtml: string; name?: string },
+  ): Promise<void> {
     await this.request("PATCH", `/campaigns/${campaignId}/steps/${stepId}`, {
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
       subject: patch.subject,
       body_html: patch.bodyHtml,
     });

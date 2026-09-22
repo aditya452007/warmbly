@@ -72,6 +72,15 @@ describe("schemas", () => {
     expect(OutreachSchema.safeParse({ subject: "ok", body: "" }).success).toBe(false);
     expect(OutreachSchema.safeParse({ subject: "ok", body: "x".repeat(4001) }).success).toBe(false);
   });
+
+  it("rejects Markdown constructs but keeps plain prose", () => {
+    expect(OutreachSchema.safeParse({ subject: "ok", body: "See [this](https://x.example/)" }).success).toBe(false);
+    expect(OutreachSchema.safeParse({ subject: "ok", body: "# Hello\ntext" }).success).toBe(false);
+    expect(OutreachSchema.safeParse({ subject: "ok", body: "This is **great** news" }).success).toBe(false);
+    expect(
+      OutreachSchema.safeParse({ subject: "ok", body: "A 5-star shop on 1st-Street, open Mon-Fri." }).success,
+    ).toBe(true);
+  });
 });
 
 describe("research tolerance", () => {

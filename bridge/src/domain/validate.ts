@@ -88,12 +88,21 @@ export const ResearchSchema = z
   }));
 
 const NO_CRLF = /[\r\n]/;
+// Unambiguous Markdown constructs. Plain prose with dashes, asterisks in
+// normal writing ("5-star", "$99 teeth-cleaning") must keep passing; only
+// link/image syntax, ATX headers, and bold/italic spans are rejected.
+const MARKDOWN = /(^|\n)#{1,6}\s|\[.+?\]\(.+?\)|!\[[^\]]*\]\(.+?\)|\*\*.+?\*\*|__.+?__/;
 
 export const OutreachSchema = z.object({
   subject: z.string().trim().min(1).max(120).refine((s) => !NO_CRLF.test(s), {
     message: "subject must be a single line",
   }),
-  body: z.string().trim().min(1).max(4000),
+  body: z
+    .string()
+    .trim()
+    .min(1)
+    .max(4000)
+    .refine((s) => !MARKDOWN.test(s), { message: "body must be plain text, no Markdown" }),
 });
 
 export function isHttpUrl(s: string): boolean {

@@ -579,6 +579,7 @@ export class BridgeOrchestrator {
         painPoints: result.data.pain_points,
         facts: result.data.facts,
       });
+      this.leads.setStatus(lead.id, "RESEARCHED");
       // Qualification: an email plus at least a website or solid confidence.
       // Rejected leads stay local with their research; nothing is discarded.
       const qualifies = !!lead.email && (!!lead.website_domain || lead.confidence >= 0.2);
@@ -661,6 +662,7 @@ export class BridgeOrchestrator {
           custom_fields: {
             ...(await this.existingCustomFields(contactId)),
             ...mapOutreachToCustomFields(rendered.subject, result.data.body),
+            ai_status: "personalized",
           },
         });
         this.leads.setSynced(lead.id, contactId);
@@ -704,6 +706,9 @@ export class BridgeOrchestrator {
     const offers = [...run.offerUrls, "", "", ""].slice(0, 3) as [string, string, string];
     const shell = await renderOutreach({ aiSubject: "AI Outreach", aiBodyText: "Personalized per contact.", offers });
     await this.warmbly.updateStep(run.warmblyCampaignId, step.id, {
+      // Name the shell so reruns find and refresh it instead of piling up
+      // duplicate steps.
+      name: OUTREACH_STEP_NAME,
       subject: "{{.ai_subject}}",
       bodyHtml: shell.stepHtml,
     });

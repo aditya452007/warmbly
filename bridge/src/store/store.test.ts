@@ -216,6 +216,44 @@ describe("research and drafts", () => {
       closeDb(db);
     }
   });
+
+  it("drafts survive close and reopen (restart)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bridge-restart-"));
+    try {
+      const path = join(dir, "bridge.sqlite");
+      const first = openBridgeDb(path);
+      try {
+        seedRun(first);
+        const leads = new Leads(first);
+        leads.insert({ id: "lead-9", campaignRunId: "run-1", identity: "example.com", businessName: "Example" });
+        new Drafts(first).upsert({
+          id: "draft-9",
+          leadId: "lead-9",
+          subject: "Persisted",
+          body: "Survives restart",
+          templateName: "intro",
+          templateVersion: "1",
+          renderedHtml: "<p>x</p>",
+          offerSnapshot: ["https://example.com/offer"],
+        });
+      } finally {
+        closeDb(first);
+      }
+      const second = openBridgeDb(path);
+      try {
+        const rows = second.prepare("SELECT * FROM outreach_drafts WHERE lead_id = ?").all("lead-9") as Array<{
+          subject: string;
+          body: string;
+        }>;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ subject: "Persisted", body: "Survives restart" });
+      } finally {
+        closeDb(second);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("events", () => {
