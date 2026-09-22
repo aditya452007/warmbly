@@ -12,7 +12,7 @@ import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import { Loader2Icon, SparklesIcon } from "lucide-react";
 import { Label, NumberInput, TextInput } from "@/components/ui/field";
-import { Page, PageBody, PageTopbar } from "@/components/layout/Page";
+import { Page, PageBody, PageTopbar, TopbarAction } from "@/components/layout/Page";
 import { cn } from "@/lib/utils";
 import useCreateCampaign from "@/lib/api/hooks/app/campaigns/useCreateCampaign";
 import type { AppError } from "@/lib/api/client/normalizeError";
@@ -118,7 +118,11 @@ export default function AICampaignPage() {
             <PageTopbar
                 eyebrow="AI Campaign"
                 subtitle="Find businesses, personalize outreach, and add them to a Warmbly campaign."
-            />
+            >
+                <TopbarAction variant="ghost" href="/app/campaigns/ai/review">
+                    Review drafts
+                </TopbarAction>
+            </PageTopbar>
             <PageBody>
                 <form onSubmit={onSubmit} noValidate className="max-w-[560px] mx-auto px-5 py-6">
                     <div className="space-y-5">

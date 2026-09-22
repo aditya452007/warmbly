@@ -21,9 +21,11 @@ import {
   CampaignRuns,
   DiscoveryJobs,
   Drafts,
+  DRAFT_STATUS,
   Events,
   Leads,
   Research,
+  type DraftRow,
   type LeadRow,
 } from "../store/repositories.js";
 import { ContactSyncBuffer, type SyncRecorder } from "../warmbly/sync.js";
@@ -527,7 +529,15 @@ export class BridgeOrchestrator {
 
       const counts = this.leads.countsByStatus(runId);
       const terminalFails = (counts.FAILED ?? 0) + failed;
-      this.runs.setStatus(runId, terminalFails > 0 ? "PARTIALLY_COMPLETED" : "COMPLETED");
+      const draftCounts = this.drafts.countsByStatus(runId);
+      const reviewable =
+        (draftCounts.NEEDS_REVIEW ?? 0) + (draftCounts.RENDERED ?? 0) + (draftCounts.APPROVED ?? 0);
+      // READY_FOR_REVIEW when drafts await humans; incomplete/failed leads
+      // never count as ready on their own.
+      this.runs.setStatus(
+        runId,
+        terminalFails > 0 ? "PARTIALLY_COMPLETED" : reviewable > 0 ? "READY_FOR_REVIEW" : "COMPLETED",
+      );
       this.events.append({ kind: "campaign.completed", campaignRunId: runId, message: `synced=${counts.SYNCED_TO_WARMBLY ?? 0}` });
     } catch (err) {
       this.runs.setStatus(runId, "FAILED", (err instanceof Error ? err.message : String(err)).slice(0, 500));
@@ -636,41 +646,8 @@ export class BridgeOrchestrator {
       );
       if (result.sessionId) this.trackSession(result.sessionId);
       if (!result.ok || !result.data) throw new Error(`personalize failed: ${result.error?.code ?? "unknown"}`);
-      const offers = [...run.offerUrls, "", "", ""].slice(0, 3) as [string, string, string];
-      const rendered = await renderOutreach({ aiSubject: result.data.subject, aiBodyText: result.data.body, offers });
-      this.drafts.upsert({
-        id: randomUUID(),
-        leadId: lead.id,
-        subject: rendered.subject,
-        body: result.data.body,
-        templateName: OUTREACH_TEMPLATE_NAME,
-        templateVersion: OUTREACH_TEMPLATE_VERSION,
-        renderedHtml: rendered.snapshot,
-        offerSnapshot: [...run.offerUrls],
-        status: "RENDERED",
-      });
-      this.leads.setStatus(lead.id, "PERSONALIZED");
-      // Attach personalization to the Warmbly contact (lookup-first, so a
-      // crash between contact sync and this update cannot duplicate).
-      let contactId = lead.warmbly_contact_id;
-      if (!contactId && lead.email) {
-        const found = await this.warmbly.lookupContactByEmail(lead.email);
-        contactId = found?.id ?? null;
-      }
-      if (contactId) {
-        await this.warmbly.updateContact(contactId, {
-          custom_fields: {
-            ...(await this.existingCustomFields(contactId)),
-            ...mapOutreachToCustomFields(rendered.subject, result.data.body),
-            ai_status: "personalized",
-          },
-        });
-        this.leads.setSynced(lead.id, contactId);
-        this.leads.setStatus(lead.id, "SYNCED_TO_WARMBLY");
-      }
-      this.leads.setStatus(lead.id, "RENDERED");
+      await this.storePersonalized(runId, run, lead, result.data.subject, result.data.body, "ai");
       this.events.append({ kind: "email.rendered", campaignRunId: runId, leadId: lead.id });
-      if (contactId) this.leads.setStatus(lead.id, "SYNCED_TO_WARMBLY");
     } catch (err) {
       this.leads.setStatus(lead.id, "FAILED");
       this.events.append({
@@ -680,6 +657,70 @@ export class BridgeOrchestrator {
         message: (err instanceof Error ? err.message : String(err)).slice(0, 200),
       });
     }
+  }
+
+  // Shared render-store-attach path for AI output, human edits, and
+  // regeneration. Offer URLs always come from the run row, never the caller.
+  private async storePersonalized(
+    runId: string,
+    run: RunRequest,
+    lead: LeadRow,
+    subject: string,
+    body: string,
+    source: "ai" | "human",
+  ): Promise<string | null> {
+    const offers = run.offerUrls.slice(0, 3);
+    const rendered = await renderOutreach({ aiSubject: subject, aiBodyText: body, offers });
+    const existing = this.drafts.getByLead(lead.id);
+    this.drafts.upsert({
+      id: existing?.id ?? randomUUID(),
+      leadId: lead.id,
+      subject: rendered.subject,
+      body,
+      templateName: OUTREACH_TEMPLATE_NAME,
+      templateVersion: OUTREACH_TEMPLATE_VERSION,
+      renderedHtml: rendered.snapshot,
+      offerSnapshot: [...run.offerUrls],
+      status: DRAFT_STATUS.NEEDS_REVIEW,
+    });
+    if (source === "human" && existing) {
+      this.drafts.updateContent({
+        id: existing.id,
+        subject: rendered.subject,
+        body,
+        renderedHtml: rendered.snapshot,
+        version: existing.version,
+      });
+    }
+    this.leads.setStatus(lead.id, "PERSONALIZED");
+    return await this.attachToContact(runId, lead, rendered.subject, body);
+  }
+
+  // Lookup-first contact attach: a crash between contact sync and this update
+  // cannot duplicate. Returns the contact id or null when there is no email.
+  private async attachToContact(
+    runId: string,
+    lead: LeadRow,
+    subject: string,
+    body: string,
+  ): Promise<string | null> {
+    let contactId = lead.warmbly_contact_id;
+    if (!contactId && lead.email) {
+      const found = await this.warmbly.lookupContactByEmail(lead.email);
+      contactId = found?.id ?? null;
+    }
+    if (contactId) {
+      await this.warmbly.updateContact(contactId, {
+        custom_fields: {
+          ...(await this.existingCustomFields(contactId)),
+          ...mapOutreachToCustomFields(subject, body),
+          ai_status: "personalized",
+        },
+      });
+      this.leads.setSynced(lead.id, contactId);
+      this.leads.setStatus(lead.id, "SYNCED_TO_WARMBLY");
+    }
+    return contactId;
   }
 
   // PATCH replaces the whole custom-field map, so merge against the stored
@@ -703,7 +744,7 @@ export class BridgeOrchestrator {
     const steps = await this.warmbly.listSteps(run.warmblyCampaignId);
     let step = steps.find((s) => s.name === OUTREACH_STEP_NAME);
     if (!step) step = await this.warmbly.createStep(run.warmblyCampaignId);
-    const offers = [...run.offerUrls, "", "", ""].slice(0, 3) as [string, string, string];
+    const offers = run.offerUrls.slice(0, 3);
     const shell = await renderOutreach({ aiSubject: "AI Outreach", aiBodyText: "Personalized per contact.", offers });
     await this.warmbly.updateStep(run.warmblyCampaignId, step.id, {
       // Name the shell so reruns find and refresh it instead of piling up
@@ -720,6 +761,8 @@ export class BridgeOrchestrator {
     if (!run) throw new Error("unknown campaign run");
     const agents = this.agents.listByRun(runId);
     const counts = this.leads.countsByStatus(runId);
+    const draftCounts = this.drafts.countsByStatus(runId);
+    const needsReview = (draftCounts.NEEDS_REVIEW ?? 0) + (draftCounts.RENDERED ?? 0);
     return {
       status: run.status,
       agents: {
@@ -735,6 +778,13 @@ export class BridgeOrchestrator {
         personalized: (counts.PERSONALIZED ?? 0) + (counts.RENDERED ?? 0) + (counts.SYNCED_TO_WARMBLY ?? 0),
         rendered: counts.RENDERED ?? 0,
         synced: counts.SYNCED_TO_WARMBLY ?? 0,
+      },
+      drafts: {
+        total: Object.values(draftCounts).reduce((n, v) => n + v, 0),
+        needs_review: needsReview,
+        approved: draftCounts.APPROVED ?? 0,
+        rejected: draftCounts.REJECTED ?? 0,
+        failed: draftCounts.FAILED ?? 0,
       },
       errors: agents.reduce((n, a) => n + a.errors, 0),
     };
@@ -758,8 +808,20 @@ export class BridgeOrchestrator {
     }));
   }
 
-  listLeads(runId: string, limit: number, offset: number): unknown[] {
-    return this.leads.listByRun(runId, limit, offset).map((l) => ({
+  listRunsForCampaign(warmblyCampaignId: string): unknown[] {
+    return this.runs.listByWarmblyCampaign(warmblyCampaignId).map((r) => ({
+      id: r.id,
+      status: r.status,
+      business_type: r.business_type,
+      location: r.location,
+      parallel_agents: r.parallel_agents,
+      target_leads: r.target_leads,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    }));
+  }
+
+  listLeads(runId: string, limit: number, offset: number): unknown[] {    return this.leads.listByRun(runId, limit, offset).map((l) => ({
       id: l.id,
       business_name: l.business_name,
       website: l.website,
@@ -768,5 +830,221 @@ export class BridgeOrchestrator {
       sync_status: l.sync_status,
       warmbly_contact_id: l.warmbly_contact_id,
     }));
+  }
+
+  // Legacy AI rows were stored as RENDERED before the review lifecycle;
+  // they mean the same as NEEDS_REVIEW.
+  private static reviewStatus(stored: string): string {
+    return stored === "RENDERED" ? DRAFT_STATUS.NEEDS_REVIEW : stored;
+  }
+
+  private draftShape(draft: DraftRow, lead: LeadRow, offers: string[], research: {
+    summary: string;
+    painPoints: string[];
+    facts: Array<{ claim: string; sourceUrl: string }>;
+  } | null) {
+    return {
+      id: draft.id,
+      lead_id: draft.lead_id,
+      business_name: lead.business_name,
+      email: lead.email,
+      website: lead.website,
+      location: lead.city ?? lead.country ?? "",
+      agent_id: lead.agent_id,
+      research_summary: research?.summary ?? "",
+      pain_points: research?.painPoints ?? [],
+      facts: research?.facts ?? [],
+      subject: draft.subject,
+      body: draft.body,
+      status: BridgeOrchestrator.reviewStatus(draft.status),
+      source: draft.source,
+      version: draft.version,
+      template_name: draft.template_name,
+      template_version: draft.template_version,
+      rendered_html: draft.rendered_html_snapshot,
+      offer_urls: offers,
+      updated_at: draft.updated_at,
+    };
+  }
+
+  private runOffers(runId: string): { run: RunRequest; offers: string[] } {
+    const stored = this.runs.get(runId);
+    if (!stored) throw new Error("unknown campaign run");
+    const offers = [stored.offer_url_1, stored.offer_url_2, stored.offer_url_3].filter(
+      (u): u is string => !!u,
+    );
+    return {
+      run: {
+        warmblyCampaignId: stored.warmbly_campaign_id,
+        businessType: stored.business_type,
+        location: stored.location,
+        customInstructions: stored.custom_instructions,
+        offerUrls: offers,
+        parallelAgents: stored.parallel_agents,
+        targetLeads: stored.target_leads,
+      },
+      offers,
+    };
+  }
+
+  listDrafts(runId: string, limit: number, offset: number): unknown[] {
+    this.runOffers(runId);
+    return this.drafts.listByRun(runId, limit, offset).map((row) => {
+      const lead = this.leads.get(row.lead_id);
+      const research = this.research.get(row.lead_id);
+      const stored = this.runs.get(runId);
+      const offers = [stored?.offer_url_1, stored?.offer_url_2, stored?.offer_url_3].filter(
+        (u): u is string => !!u,
+      );
+      return this.draftShape(
+        row,
+        lead ?? {
+          id: row.lead_id,
+          campaign_run_id: runId,
+          agent_id: null,
+          identity: "",
+          business_name: "",
+          website: null,
+          website_domain: null,
+          email: null,
+          phone: null,
+          address: null,
+          city: null,
+          country: null,
+          source_urls: "[]",
+          confidence: 0,
+          status: "",
+          sync_status: "",
+          warmbly_contact_id: null,
+          sync_attempts: 0,
+          sync_error: null,
+          created_at: "",
+          updated_at: "",
+        },
+        offers,
+        research
+          ? { summary: research.summary, painPoints: research.painPoints as string[], facts: research.facts as Array<{ claim: string; sourceUrl: string }> }
+          : null,
+      );
+    });
+  }
+
+  getDraft(draftId: string): unknown {
+    const draft = this.drafts.get(draftId);
+    if (!draft) throw new Error("draft not found");
+    const lead = this.leads.get(draft.lead_id);
+    if (!lead) throw new Error("draft not found");
+    const { offers } = this.runOffers(lead.campaign_run_id);
+    const research = this.research.get(lead.id);
+    return this.draftShape(
+      draft,
+      lead,
+      offers,
+      research
+        ? { summary: research.summary, painPoints: research.painPoints as string[], facts: research.facts as Array<{ claim: string; sourceUrl: string }> }
+        : null,
+    );
+  }
+
+  // Human save: validate, re-render with the run's own offers, persist with
+  // optimistic concurrency, refresh Warmbly vars. Offer URLs are never
+  // accepted from the caller, so editing cannot alter them.
+  async saveDraft(draftId: string, input: { subject: string; body: string; version: number }): Promise<unknown> {
+    const draft = this.drafts.get(draftId);
+    if (!draft) throw new Error("draft not found");
+    const lead = this.leads.get(draft.lead_id);
+    if (!lead) throw new Error("draft not found");
+    const { run } = this.runOffers(lead.campaign_run_id);
+    const parsed = OutreachSchema.safeParse({ subject: input.subject, body: input.body });
+    if (!parsed.success) {
+      throw new Error(`invalid draft: ${parsed.error.issues[0]?.message ?? "rejected"}`);
+    }
+    const offers = run.offerUrls.slice(0, 3);
+    const rendered = await renderOutreach({ aiSubject: parsed.data.subject, aiBodyText: parsed.data.body, offers });
+    const saved = this.drafts.updateContent({
+      id: draft.id,
+      subject: rendered.subject,
+      body: parsed.data.body,
+      renderedHtml: rendered.snapshot,
+      version: input.version,
+    });
+    if (!saved) {
+      const fresh = new Error("draft changed underneath; reload and reapply your edit");
+      (fresh as { code?: string }).code = "draft_conflict";
+      throw fresh;
+    }
+    const freshLead = this.leads.get(lead.id);
+    if (freshLead) await this.attachToContact(lead.campaign_run_id, freshLead, rendered.subject, parsed.data.body);
+    this.events.append({ kind: "draft.saved", campaignRunId: lead.campaign_run_id, leadId: lead.id });
+    return this.getDraft(draftId);
+  }
+
+  approveDraft(draftId: string): unknown {
+    const draft = this.drafts.get(draftId);
+    const lead = draft ? this.leads.get(draft.lead_id) : undefined;
+    if (!draft || !lead) throw new Error("draft not found");
+    // Approval is a local business state only: it never starts, enqueues,
+    // or sends anything.
+    this.drafts.setStatus(draftId, DRAFT_STATUS.APPROVED);
+    this.events.append({ kind: "draft.approved", campaignRunId: lead.campaign_run_id, leadId: draft.lead_id });
+    return this.getDraft(draftId);
+  }
+
+  rejectDraft(draftId: string): unknown {
+    const draft = this.drafts.get(draftId);
+    const lead = draft ? this.leads.get(draft.lead_id) : undefined;
+    if (!draft || !lead) throw new Error("draft not found");
+    this.drafts.setStatus(draftId, DRAFT_STATUS.REJECTED);
+    this.events.append({ kind: "draft.rejected", campaignRunId: lead.campaign_run_id, leadId: draft.lead_id });
+    return this.getDraft(draftId);
+  }
+
+  // Regeneration reuses the exact personalize path (fresh session, same
+  // research, no offer URLs) and stores the result as NEEDS_REVIEW.
+  async regenerateDraft(draftId: string): Promise<unknown> {
+    const draft = this.drafts.get(draftId);
+    if (!draft) throw new Error("draft not found");
+    const lead = this.leads.get(draft.lead_id);
+    if (!lead) throw new Error("draft not found");
+    const { run } = this.runOffers(lead.campaign_run_id);
+    const runtime = this.createRuntime(this.config.AI_PROVIDER);
+    try {
+      const stored = this.research.get(lead.id);
+      const built = buildPersonalizePrompt({
+        businessName: lead.business_name,
+        website: lead.website ?? "unknown",
+        location: run.location,
+        businessType: run.businessType,
+        researchSummary: stored?.summary ?? "",
+        painPoints: (stored?.painPoints as string[] | undefined)?.join("; ") ?? "",
+        facts: (stored?.facts as Array<{ claim: string; sourceUrl: string }> | undefined)
+          ?.map((f) => `${f.claim} (${f.sourceUrl})`)
+          .join("; ") ?? "",
+        customInstructions: run.customInstructions,
+        maxSubjectChars: 120,
+        maxBodyChars: 4000,
+      });
+      const result = await runtime.executeStructured(
+        {
+          systemPrompt: built.system,
+          prompt: built.text,
+          timeoutMs: this.config.AI_JOB_TIMEOUT_MS,
+          title: `regenerate:${lead.id}`,
+          model: this.modelOpt(),
+        },
+        OutreachSchema,
+      );
+      if (result.sessionId) this.trackSession(result.sessionId);
+      if (!result.ok || !result.data) throw new Error(`regenerate failed: ${result.error?.code ?? "unknown"}`);
+      await this.storePersonalized(lead.campaign_run_id, run, lead, result.data.subject, result.data.body, "ai");
+      this.events.append({ kind: "draft.regenerated", campaignRunId: lead.campaign_run_id, leadId: lead.id });
+      return this.getDraft(draftId);
+    } finally {
+      try {
+        await runtime.close();
+      } catch {
+        // Provider close is best effort.
+      }
+    }
   }
 }

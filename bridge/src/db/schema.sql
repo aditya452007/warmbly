@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS outreach_drafts (
   rendered_html_snapshot TEXT,
   offer_snapshot TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'DRAFT',
+  -- source tracks provenance: 'ai' for generated, 'human' after a manual edit.
+  -- version increments on every save for optimistic concurrency.
+  source TEXT NOT NULL DEFAULT 'ai',
+  version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

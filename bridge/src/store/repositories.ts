@@ -46,8 +46,10 @@ export type LeadSyncStatus = (typeof LEAD_SYNC_STATUS)[keyof typeof LEAD_SYNC_ST
 
 export const DRAFT_STATUS = {
   DRAFT: "DRAFT",
+  NEEDS_REVIEW: "NEEDS_REVIEW",
   APPROVED: "APPROVED",
-  SENT: "SENT",
+  REJECTED: "REJECTED",
+  FAILED: "FAILED",
 } as const;
 export type DraftStatus = (typeof DRAFT_STATUS)[keyof typeof DRAFT_STATUS];
 
@@ -153,6 +155,12 @@ export class CampaignRuns {
 
   get(id: string): CampaignRunRow | undefined {
     return this.getStmt.get(id) as CampaignRunRow | undefined;
+  }
+
+  listByWarmblyCampaign(warmblyCampaignId: string): CampaignRunRow[] {
+    return this.db
+      .prepare("SELECT * FROM campaign_runs WHERE warmbly_campaign_id = ? ORDER BY created_at DESC")
+      .all(warmblyCampaignId) as CampaignRunRow[];
   }
 
   // Runs that may hold unfinished work after a crash: anything not in a
@@ -643,6 +651,8 @@ export interface DraftRow {
   rendered_html_snapshot: string | null;
   offer_snapshot: string;
   status: string;
+  source: string;
+  version: number;
   created_at: string;
   updated_at: string;
 }
@@ -695,6 +705,64 @@ export class Drafts {
       draft.status ?? DRAFT_STATUS.DRAFT,
       utcNow(),
     );
+  }
+
+  get(id: string): DraftRow | undefined {
+    return this.db.prepare("SELECT * FROM outreach_drafts WHERE id = ?").get(id) as DraftRow | undefined;
+  }
+
+  getByLead(leadId: string): DraftRow | undefined {
+    return this.db.prepare("SELECT * FROM outreach_drafts WHERE lead_id = ?").get(leadId) as DraftRow | undefined;
+  }
+
+  // Review list: drafts joined to their lead and campaign for one query.
+  listByRun(runId: string, limit: number, offset: number): Array<DraftRow & LeadRow> {
+    return this.db
+      .prepare(
+        `SELECT d.*, l.business_name, l.email, l.website, l.city, l.country, l.confidence, l.status AS lead_status
+         FROM outreach_drafts d JOIN leads l ON l.id = d.lead_id
+         WHERE l.campaign_run_id = ? ORDER BY d.created_at ASC, d.id ASC LIMIT ? OFFSET ?`,
+      )
+      .all(runId, limit, offset) as Array<DraftRow & LeadRow>;
+  }
+
+  countsByStatus(runId: string): Record<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT d.status, COUNT(*) AS n FROM outreach_drafts d JOIN leads l ON l.id = d.lead_id
+         WHERE l.campaign_run_id = ? GROUP BY d.status`,
+      )
+      .all(runId) as Array<{ status: string; n: number }>;
+    const out: Record<string, number> = {};
+    for (const row of rows) out[row.status] = row.n;
+    return out;
+  }
+
+  setStatus(id: string, status: string): void {
+    this.db
+      .prepare("UPDATE outreach_drafts SET status = ?, updated_at = ? WHERE id = ?")
+      .run(status, utcNow(), id);
+  }
+
+  // Human save with optimistic concurrency: returns false when the row
+  // changed underneath (stale version) instead of overwriting newer data.
+  // A successful save marks the draft human-sourced NEEDS_REVIEW and bumps
+  // the version; offer snapshot and template stay exactly as rendered.
+  updateContent(args: {
+    id: string;
+    subject: string;
+    body: string;
+    renderedHtml: string;
+    version: number;
+  }): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE outreach_drafts
+         SET subject = ?, body = ?, rendered_html_snapshot = ?, status = ?, source = 'human', version = version + 1, updated_at = ?
+         WHERE id = ? AND version = ?`,
+      )
+      .run(args.subject, args.body, args.renderedHtml, DRAFT_STATUS.NEEDS_REVIEW, utcNow(), args.id, args.version);
+    return Number(info.changes) > 0;
   }
 }
 

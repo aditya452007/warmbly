@@ -41,4 +41,12 @@ describe("renderOutreach", () => {
     expect(out.snapshot).toContain("&lt;script&gt;");
     expect(out.stepHtml).not.toContain("<script>");
   });
+
+  it("renders exactly the offers given, never empty buttons", async () => {
+    const one = await renderOutreach({ ...FAKE, offers: ["https://example.com/only"] });
+    expect(one.stepHtml).toContain("https://example.com/only");
+    expect(one.stepHtml).not.toMatch(/href\s*=\s*""/);
+    expect(one.stepHtml).not.toContain("Offer 2");
+    await expect(renderOutreach({ ...FAKE, offers: [] })).rejects.toBeInstanceOf(RenderError);
+  });
 });

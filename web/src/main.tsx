@@ -21,6 +21,7 @@ import SuppressionsPage from './app/app/contacts/suppressions/page';
 import SegmentPage from './app/app/contacts/segments/[id]/page';
 import CampaignsPage from './app/app/campaigns/page';
 import AICampaignPage from './app/app/campaigns/ai/page';
+import AIReviewPage from './app/app/campaigns/ai/review/page';
 import CampaignLayout from './app/app/campaigns/[id]/layout';
 import CampaignPreview from './app/app/campaigns/[id]/page';
 import CampaignLeads from './app/app/campaigns/[id]/leads/page';
@@ -282,7 +283,11 @@ const router = createBrowserRouter([
               {
                 // Static before dynamic: otherwise "ai" matches :id.
                 path: "ai",
-                element: <AICampaignPage />,
+                children: [
+                  { index: true, element: <AICampaignPage /> },
+                  // Static before dynamic: otherwise "review" matches :id.
+                  { path: "review", element: <AIReviewPage /> },
+                ],
               },
               {
                 path: ":id",

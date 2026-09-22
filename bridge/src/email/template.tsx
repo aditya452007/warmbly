@@ -13,8 +13,12 @@ export const AI_BODY_VAR = "{{.ai_body}}";
 
 export interface OutreachTemplateProps {
   aiBodySentinel?: string;
-  offers: [string, string, string];
+  // One to three offer URLs, verbatim from campaign configuration. Exactly
+  // one button renders per URL: no placeholder buttons, never an empty href.
+  offers: string[];
 }
+
+const OFFER_LABELS = ["Offer 1", "Offer 2", "Offer 3"];
 
 export function OutreachTemplate({ aiBodySentinel = BODY_SENTINEL, offers }: OutreachTemplateProps) {
   return (
@@ -32,21 +36,13 @@ export function OutreachTemplate({ aiBodySentinel = BODY_SENTINEL, offers }: Out
           </Section>
           <Section>
             <Text style={{ fontWeight: "bold" }}>A few things that might help:</Text>
-            <Section>
-              <Button href={offers[0]} style={{ background: "#0284c7", color: "#fff", padding: "10px 18px" }}>
-                Offer 1
-              </Button>
-            </Section>
-            <Section>
-              <Button href={offers[1]} style={{ background: "#0284c7", color: "#fff", padding: "10px 18px" }}>
-                Offer 2
-              </Button>
-            </Section>
-            <Section>
-              <Button href={offers[2]} style={{ background: "#0284c7", color: "#fff", padding: "10px 18px" }}>
-                Offer 3
-              </Button>
-            </Section>
+            {offers.map((url, i) => (
+              <Section key={url}>
+                <Button href={url} style={{ background: "#0284c7", color: "#fff", padding: "10px 18px" }}>
+                  {OFFER_LABELS[i] ?? `Offer ${i + 1}`}
+                </Button>
+              </Section>
+            ))}
           </Section>
           <Hr />
           <Section>

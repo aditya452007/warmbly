@@ -18,6 +18,17 @@ export function openBridgeDb(dbPath: string): BridgeDb {
   db.pragma("foreign_keys = ON");
   const schemaPath = fileURLToPath(new URL("./db/schema.sql", import.meta.url));
   db.exec(readFileSync(schemaPath, "utf8"));
+  // Forward-only additive migrations for databases created before a column
+  // existed. CREATE TABLE IF NOT EXISTS cannot add columns to old files.
+  for (const [table, column, ddl] of [
+    ["outreach_drafts", "source", "TEXT NOT NULL DEFAULT 'ai'"],
+    ["outreach_drafts", "version", "INTEGER NOT NULL DEFAULT 1"],
+  ] as const) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
+  }
   return db;
 }
 

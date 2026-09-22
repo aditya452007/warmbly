@@ -16,7 +16,7 @@ export class RenderError extends Error {
 export interface RenderInput {
   aiSubject: string;
   aiBodyText: string;
-  offers: [string, string, string];
+  offers: string[];
 }
 
 export interface RenderedOutreach {
@@ -31,7 +31,7 @@ function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-function assertSafe(html: string, offers: [string, string, string]): void {
+function assertSafe(html: string, offers: string[]): void {
   if (/__WARMBLY_[A-Z_]+__/.test(html)) {
     throw new RenderError("unresolved sentinel remains");
   }
@@ -51,6 +51,10 @@ function assertSafe(html: string, offers: [string, string, string]): void {
       throw new RenderError("offer URL altered or missing");
     }
   }
+  // No dead buttons: every rendered link carries a real destination.
+  if (/href\s*=\s*""/.test(html)) {
+    throw new RenderError("empty link target rendered");
+  }
   if (html.length > MAX_RENDERED_HTML_CHARS) {
     throw new RenderError("rendered email exceeds size cap");
   }
@@ -63,6 +67,9 @@ export async function renderOutreach(input: RenderInput): Promise<RenderedOutrea
   const parsed = OutreachSchema.safeParse({ subject: input.aiSubject, body: input.aiBodyText });
   if (!parsed.success) {
     throw new RenderError(`invalid AI copy: ${parsed.error.issues[0]?.message ?? "rejected"}`);
+  }
+  if (input.offers.length < 1 || input.offers.length > 3) {
+    throw new RenderError("one to three offer URLs are required");
   }
   const html = await render(OutreachTemplate({ offers: input.offers }));
   if (countOccurrences(html, BODY_SENTINEL) !== 1) {
