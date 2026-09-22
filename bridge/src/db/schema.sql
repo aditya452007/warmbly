@@ -228,6 +228,60 @@ CREATE TABLE IF NOT EXISTS contact_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_signals_queue_email ON contact_signals(queue_id, email);
 
+-- Phase 9 reply handling. Inbound replies matched to bridge-sent threads by
+-- Message-ID ancestry. One row per Warmbly message: re-polls never duplicate.
+CREATE TABLE IF NOT EXISTS inbound_replies (
+  id TEXT PRIMARY KEY,
+  queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
+  lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  warmbly_id TEXT NOT NULL,
+  rfc_message_id TEXT,
+  thread_id TEXT,
+  from_email TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  body_text TEXT NOT NULL DEFAULT '',
+  received_at TEXT,
+  analysis_intent TEXT,
+  analysis_confidence REAL,
+  analysis_summary TEXT,
+  analysis_action TEXT,
+  analyzed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (queue_id, warmbly_id)
+);
+CREATE INDEX IF NOT EXISTS idx_replies_queue_lead ON inbound_replies(queue_id, lead_id);
+
+-- Human-gated responses to inbound replies. AI drafts plain text only;
+-- approval sends exactly one threaded answer through the normal send gates
+-- (daily slot, live cap, suppression). Never auto-sent.
+CREATE TABLE IF NOT EXISTS response_drafts (
+  id TEXT PRIMARY KEY,
+  queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
+  lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  reply_id TEXT NOT NULL UNIQUE REFERENCES inbound_replies(id) ON DELETE CASCADE,
+  subject TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'NEEDS_REVIEW',
+  version INTEGER NOT NULL DEFAULT 1,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  in_reply_to TEXT,
+  provider_message_id TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Incremental reply polling cursor per recipient address. A failed poll keeps
+-- the old cursor: the next poll retries the same window instead of skipping.
+CREATE TABLE IF NOT EXISTS reply_polls (
+  queue_id TEXT NOT NULL REFERENCES send_queues(id) ON DELETE CASCADE,
+  address TEXT NOT NULL,
+  last_seen TEXT,
+  last_status TEXT NOT NULL DEFAULT 'ok',
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (queue_id, address)
+);
+
 -- Structured application events. Never stores secrets or raw provider output.
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

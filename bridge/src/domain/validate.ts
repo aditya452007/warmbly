@@ -105,6 +105,17 @@ export const OutreachSchema = z.object({
     .refine((s) => !MARKDOWN.test(s), { message: "body must be plain text, no Markdown" }),
 });
 
+// Reply analysis output. Intent vocabulary mirrors Warmbly's replyclassify
+// classes (positive/negative/neutral/unsubscribe + automated) so the two
+// systems agree about what a reply means; the bridge never re-implements
+// Warmbly's classifier for native threads.
+export const ReplyAnalysisSchema = z.object({
+  intent: z.enum(["positive", "negative", "neutral", "unsubscribe", "automated"]),
+  confidence: z.number().min(0).max(1),
+  summary: z.string().trim().min(1).max(500),
+  suggested_action: z.string().trim().min(1).max(300),
+});
+
 export function isHttpUrl(s: string): boolean {
   return /^https?:\/\/.+/i.test(s);
 }

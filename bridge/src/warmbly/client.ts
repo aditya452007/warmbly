@@ -268,4 +268,61 @@ export class WarmblyClient {
       return entry === needle;
     });
   }
+
+  // Reply sync reads. The bridge key needs READ_UNIBOX; without it these
+  // throw and the poller treats the source as unavailable (retryable, never
+  // fabricated). Replies only exist here when the reply mailbox is connected
+  // to Warmbly; otherwise there is nothing to poll.
+  async searchUniboxThreads(args: { address: string; direction?: string; since?: string; limit?: number }): Promise<UniboxThreadPreview[]> {
+    const q = new URLSearchParams({ address: args.address, limit: String(args.limit ?? 25) });
+    if (args.direction) q.set("direction", args.direction);
+    if (args.since) q.set("since", args.since);
+    const data = await this.request<unknown>("GET", `/unibox?${q.toString()}`);
+    const parsed = z
+      .object({ data: z.array(UniboxThreadPreviewSchema).optional() })
+      .passthrough()
+      .parse(data);
+    return parsed.data ?? [];
+  }
+
+  async getUniboxThread(threadId: string): Promise<UniboxThreadMessage[]> {
+    const data = await this.request<unknown>("GET", `/unibox/thread?thread_id=${encodeURIComponent(threadId)}`);
+    const parsed = z
+      .object({ data: z.array(UniboxThreadMessageSchema).optional() })
+      .passthrough()
+      .parse(data);
+    return parsed.data ?? [];
+  }
 }
+
+const UniboxThreadPreviewSchema = z
+  .object({
+    id: z.string().optional(),
+    thread_id: z.string(),
+    from_addr: z.array(z.string()).optional(),
+    to_addr: z.array(z.string()).optional(),
+    subject: z.string().optional(),
+    snippet: z.string().optional(),
+    internal_date: z.string().optional(),
+    message_count: z.number().optional(),
+  })
+  .passthrough();
+
+export interface UniboxThreadPreview extends z.infer<typeof UniboxThreadPreviewSchema> {}
+
+const UniboxThreadMessageSchema = z
+  .object({
+    id: z.string(),
+    thread_id: z.string().optional(),
+    from_addr: z.array(z.string()).optional(),
+    to_addr: z.array(z.string()).optional(),
+    subject: z.string().optional(),
+    snippet: z.string().optional(),
+    body_text: z.string().optional(),
+    message_id: z.string().optional(),
+    in_reply_to: z.array(z.string()).optional(),
+    internal_date: z.string().optional(),
+  })
+  .passthrough();
+
+export interface UniboxThreadMessage extends z.infer<typeof UniboxThreadMessageSchema> {}

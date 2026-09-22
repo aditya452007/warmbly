@@ -1,21 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+    analyzeReply,
     approveBridgeDraft,
     approveFollowup,
+    approveResponse,
     cancelSendQueue,
     createSendQueue,
+    draftResponse,
     getBridgeDraft,
     getBridgePreview,
     getBridgeStatus,
     getSendQueueMetrics,
     listBridgeDrafts,
     listBridgeRuns,
+    listQueueReplies,
+    listQueueResponses,
     listSendQueueFollowups,
     pauseSendQueue,
+    pollQueueReplies,
     previewSendQueue,
     regenerateBridgeDraft,
     rejectBridgeDraft,
     rejectFollowup,
+    rejectResponse,
     resumeSendQueue,
     saveBridgeDraft,
     sendBridgeDraft,
@@ -219,6 +226,74 @@ export function useRejectFollowup() {
     const invalidate = useInvalidateQueue();
     return useMutation({
         mutationFn: (id: string) => rejectFollowup(id),
+        onSuccess: () => invalidate(),
+    });
+}
+
+function useInvalidateReplies() {
+    const queryClient = useQueryClient();
+    return () => {
+        void queryClient.invalidateQueries({ queryKey: [KEY, "replies"] });
+        void queryClient.invalidateQueries({ queryKey: [KEY, "responses"] });
+    };
+}
+
+export function useQueueReplies(runId: string | null) {
+    return useQuery({
+        queryKey: [KEY, "replies", runId],
+        queryFn: () => listQueueReplies(runId as string),
+        enabled: !!runId,
+        staleTime: 10_000,
+        retry: false,
+    });
+}
+
+export function useQueueResponses(runId: string | null) {
+    return useQuery({
+        queryKey: [KEY, "responses", runId],
+        queryFn: () => listQueueResponses(runId as string),
+        enabled: !!runId,
+        staleTime: 10_000,
+        retry: false,
+    });
+}
+
+export function usePollQueueReplies() {
+    const invalidate = useInvalidateReplies();
+    return useMutation({
+        mutationFn: (runId: string) => pollQueueReplies(runId),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useAnalyzeReply() {
+    const invalidate = useInvalidateReplies();
+    return useMutation({
+        mutationFn: (id: string) => analyzeReply(id),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useDraftResponse() {
+    const invalidate = useInvalidateReplies();
+    return useMutation({
+        mutationFn: (input: { id: string; instruction?: string }) => draftResponse(input.id, input.instruction ?? ""),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useApproveResponse() {
+    const invalidate = useInvalidateReplies();
+    return useMutation({
+        mutationFn: (id: string) => approveResponse(id),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useRejectResponse() {
+    const invalidate = useInvalidateReplies();
+    return useMutation({
+        mutationFn: (id: string) => rejectResponse(id),
         onSuccess: () => invalidate(),
     });
 }

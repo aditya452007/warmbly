@@ -27,6 +27,7 @@ import type { BridgeDraft } from "@/lib/api/bridge";
 import { cn } from "@/lib/utils";
 import ReviewDrawer, { draftLabel, draftTone } from "./ReviewDrawer";
 import BulkSendPanel from "./BulkSendPanel";
+import RepliesPanel from "./RepliesPanel";
 
 export default function AIReviewPage() {
     const [params] = useSearchParams();
@@ -136,6 +137,8 @@ export default function AIReviewPage() {
                     </StatStrip>
 
                     {runId && <BulkSendPanel runId={runId} />}
+
+                    {runId && <RepliesPanel runId={runId} />}
 
                     <SectionBar label="Drafts" count={drafts.length} />
                     <PageBody>

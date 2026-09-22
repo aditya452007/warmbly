@@ -216,3 +216,55 @@ export function approveFollowup(followupId: string): Promise<{ followup: BridgeF
 export function rejectFollowup(followupId: string): Promise<{ followup: BridgeFollowup }> {
     return bridgeFetch(`/api/followups/${followupId}/reject`, { method: "POST" });
 }
+
+export interface BridgeReply {
+    id: string;
+    lead_id: string;
+    from_email: string;
+    subject: string;
+    body_text: string;
+    received_at: string | null;
+    analysis_intent: string | null;
+    analysis_confidence: number | null;
+    analysis_summary: string | null;
+    analysis_action: string | null;
+    analyzed_at: string | null;
+}
+
+export interface BridgeResponse {
+    id: string;
+    lead_id: string;
+    reply_id: string;
+    subject: string;
+    body: string;
+    status: string;
+    version: number;
+}
+
+export function pollQueueReplies(runId: string): Promise<{ poll: { ingested: number; analyzed: number; errors: number } }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/poll-replies`, { method: "POST" });
+}
+
+export function listQueueReplies(runId: string): Promise<{ replies: BridgeReply[]; metrics: { replies: number; analyzed: number; intents: Record<string, number> } }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/replies?limit=200`);
+}
+
+export function listQueueResponses(runId: string): Promise<{ responses: BridgeResponse[] }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/responses?limit=200`);
+}
+
+export function analyzeReply(replyId: string, force = false): Promise<{ reply: BridgeReply }> {
+    return bridgeFetch(`/api/replies/${replyId}/analyze`, { method: "POST", body: JSON.stringify({ force }) });
+}
+
+export function draftResponse(replyId: string, instruction = ""): Promise<{ response: BridgeResponse }> {
+    return bridgeFetch(`/api/replies/${replyId}/draft-response`, { method: "POST", body: JSON.stringify({ instruction }) });
+}
+
+export function approveResponse(responseId: string): Promise<{ response: BridgeResponse }> {
+    return bridgeFetch(`/api/responses/${responseId}/approve`, { method: "POST" });
+}
+
+export function rejectResponse(responseId: string): Promise<{ response: BridgeResponse }> {
+    return bridgeFetch(`/api/responses/${responseId}/reject`, { method: "POST" });
+}

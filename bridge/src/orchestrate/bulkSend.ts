@@ -46,6 +46,8 @@ export interface BulkSendDeps {
   getEmailTransport?: () => EmailTransport | null;
   // Overridable in tests. Production default backs off 30s doubling.
   retryBaseMs?: number;
+  // Post-pump hook (reply sync). Wired in app.ts; absent in most tests.
+  afterPump?: (queue: SendQueueRow) => Promise<void>;
 }
 
 export type SendErrorCode =
@@ -399,6 +401,18 @@ export class BulkSender {
         break;
       }
       if (opts?.maxItems && summary.processed >= opts.maxItems) break;
+    }
+    // Bounded reply sync after bulk work: one best-effort poll pass for this
+    // queue. Poll failures are logged inside and never fail the pump. Runs
+    // for finished queues too (a completed send still earns replies); only a
+    // cancelled queue is left alone.
+    if (summary.processed > 0 && this.deps.afterPump) {
+      try {
+        const queue = this.deps.queues.get(queueId);
+        if (queue && queue.status !== QUEUE_STATUS.CANCELLED) await this.deps.afterPump(queue);
+      } catch (err) {
+        log("warn", "post-pump reply poll failed", { queueId, error: err instanceof Error ? err.message : String(err) });
+      }
     }
     return summary;
   }
@@ -954,6 +968,58 @@ export class BulkSender {
     if (ids.length === 0) return {};
     const parent = ids[ids.length - 1];
     return { inReplyTo: parent, references: ids.join(" ") };
+  }
+
+  // One threaded answer inside an existing conversation (reply responses).
+  // Consumes a daily slot and the live cap like any other real send, but skips
+  // the draft-approval gates: the human approved this exact response. The
+  // Warmbly test path cannot set threading headers, so responses need a real
+  // SMTP transport (local Mailpit or live Brevo).
+  async sendThreadedReply(
+    queueId: string,
+    msg: { to: string; subject: string; html: string; text: string; inReplyTo?: string; references?: string; headerKey: string },
+  ): Promise<string> {
+    const queue = this.deps.queues.get(queueId);
+    if (!queue) throw new GateError("SAFETY_BLOCK", "send queue missing");
+    if (queue.status === QUEUE_STATUS.CANCELLED) throw new GateError("SAFETY_BLOCK", "queue is cancelled");
+    const mode = this.deps.config.SEND_MODE;
+    if (mode !== "local" && mode !== "live") throw new GateError("CONFIGURATION", "sending is disabled (SEND_MODE must be local or live)");
+    if (mode === "live" && this.liveSentCount(queueId) >= queue.max_live_sends) {
+      throw new GateError("CONFIGURATION", `live cap reached (${queue.max_live_sends}); raise it explicitly to send more`);
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(msg.to.trim())) throw new GateError("CONFIGURATION", "invalid recipient email");
+    let suppressed: boolean;
+    try {
+      suppressed = await this.deps.warmbly.isSuppressed(msg.to.trim().toLowerCase());
+    } catch (err) {
+      throw new Error(`gate-lookup: suppression check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (suppressed) throw new GateError("SUPPRESSION", "recipient is on the workspace suppression list");
+    const transport = this.deps.getEmailTransport?.();
+    const usable = mode === "live" ? transport?.name === "brevo" : transport?.name === "local" || transport?.name === "brevo";
+    if (!transport || !usable) {
+      throw new GateError("CONFIGURATION", mode === "live" ? "live responses require EMAIL_PROVIDER=brevo" : "local responses need EMAIL_PROVIDER=local (or brevo)");
+    }
+    const from = readDefaultFrom(transport);
+    const resolvedFrom = from.email ? from : mode === "live" ? { email: "" } : { email: "bridge@localhost", name: "Bridge" };
+    if (!resolvedFrom.email) throw new GateError("CONFIGURATION", "no approved sender address configured");
+    this.reserveSlot(queue);
+    try {
+      const result = await transport.send({
+        from: resolvedFrom,
+        to: [{ email: msg.to.trim().toLowerCase() }],
+        subject: msg.subject,
+        html: msg.html,
+        text: msg.text,
+        inReplyTo: msg.inReplyTo,
+        references: msg.references,
+        headers: { "X-Bridge-Response": msg.headerKey, "X-Bridge-Queue": queueId },
+      });
+      return result.messageId || `${transport.name}:${msg.headerKey}`;
+    } catch (err) {
+      if (!(err instanceof GateError)) this.releaseSlot(queue);
+      throw err;
+    }
   }
 
   private scheduleFollowups(queue: SendQueueRow, item: SendItemRow, draft: { id: string }, recipient: string, providerMessageId: string): void {

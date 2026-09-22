@@ -61,6 +61,9 @@ const ConfigSchema = z.object({
   FOLLOWUP_DAY_OFFSETS: z.string().default("3,7,12"),
   MAX_LIVE_SENDS: z.coerce.number().int().min(1).default(3),
   SEND_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+  // Reply sync: distinct recipient addresses polled per pass. Bounds the
+  // Warmbly unibox read fan-out on large queues.
+  REPLY_POLL_BATCH: z.coerce.number().int().min(1).max(100).default(25),
 });
 
 export type BridgeConfig = z.infer<typeof ConfigSchema>;

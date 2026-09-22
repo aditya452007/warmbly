@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { BridgeOrchestrator } from "./orchestrate/orchestrator.js";
 import type { BulkSender } from "./orchestrate/bulkSend.js";
+import type { ReplySync } from "./orchestrate/replies.js";
 import { RunRequestSchema } from "./domain/validate.js";
 
 // Small local control plane. No auth: it binds localhost only (see index.ts)
@@ -12,6 +13,7 @@ export interface BridgeServerDeps {
   // only: never usernames, passwords, or SMTP responses.
   checkEmail?: () => Promise<{ provider: string; configured: boolean; connection: "ok" | "error" | "unconfigured" }>;
   bulkSender?: BulkSender;
+  replySync?: ReplySync;
 }
 
 export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeServerDeps): Hono {
@@ -446,6 +448,92 @@ export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeS
       return c.json({ recorded: true });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : "cannot record signal" }, 400);
+    }
+  });
+
+  // Reply handling (Phase 9). Polling reads Warmbly unibox (needs READ_UNIBOX
+  // on the bridge key and the reply mailbox connected); analysis and response
+  // drafting run through OpenCode; only an explicit approval sends.
+  app.post("/api/campaigns/:campaignId/send-queue/poll-replies", async (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    try {
+      return c.json({ poll: await replies.pollRunReplies(c.req.param("campaignId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot poll replies" }, 400);
+    }
+  });
+
+  app.get("/api/campaigns/:campaignId/send-queue/replies", (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    const limit = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 50)));
+    const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+    try {
+      return c.json({
+        replies: replies.listReplies(c.req.param("campaignId"), limit, offset),
+        metrics: replies.replyMetrics(c.req.param("campaignId")),
+      });
+    } catch {
+      return c.json({ error: "no send queue" }, 404);
+    }
+  });
+
+  app.get("/api/campaigns/:campaignId/send-queue/responses", (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    const limit = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 50)));
+    const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+    try {
+      return c.json({ responses: replies.listResponses(c.req.param("campaignId"), limit, offset) });
+    } catch {
+      return c.json({ error: "no send queue" }, 404);
+    }
+  });
+
+  app.post("/api/replies/:replyId/analyze", async (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    try {
+      const record = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      return c.json({ reply: await replies.analyzeReply(c.req.param("replyId"), { force: record.force === true }) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot analyze" }, 400);
+    }
+  });
+
+  app.post("/api/replies/:replyId/draft-response", async (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    try {
+      const record = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+      return c.json({
+        response: await replies.draftResponse(c.req.param("replyId"), {
+          ...(typeof record.instruction === "string" ? { instruction: record.instruction } : {}),
+        }),
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot draft response" }, 400);
+    }
+  });
+
+  app.post("/api/responses/:responseId/approve", async (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    try {
+      return c.json({ response: await replies.approveResponse(c.req.param("responseId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot approve response" }, 400);
+    }
+  });
+
+  app.post("/api/responses/:responseId/reject", (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    try {
+      return c.json({ response: replies.rejectResponse(c.req.param("responseId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot reject response" }, 400);
     }
   });
 

@@ -5,7 +5,7 @@ import { createBridgeApp } from "./server.js";
 import { SmtpError } from "./email/transport/types.js";
 
 async function main(): Promise<void> {
-  const { config, db, orchestrator, bulkSender, getEmailTransport } = buildOrchestrator();
+  const { config, db, orchestrator, bulkSender, replySync, getEmailTransport } = buildOrchestrator();
   const resumed = orchestrator.recover();
   if (resumed.length > 0) {
     log("info", "recovered stale leases", { count: resumed.length });
@@ -16,6 +16,7 @@ async function main(): Promise<void> {
   }
   const app = createBridgeApp(orchestrator, {
     bulkSender,
+    replySync,
     checkEmail: async () => {
       const emailTransport = getEmailTransport();
       if (!emailTransport) {
