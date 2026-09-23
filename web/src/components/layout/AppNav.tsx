@@ -124,6 +124,32 @@ const REQUIRES_TO_MIN_PLAN: Record<NonNullable<NavItem["requires"]>, PlanID> = {
     advanced: "business",
 };
 
+/**
+ * Sidebar focus flag (dashboard-usability audit).
+ *
+ * This workspace runs on one loop: accounts → campaigns (AI) → replies →
+ * review. The full CRM suite, the integration/automation builders and the
+ * operator surfaces (API keys, audit log) are real features with real
+ * permissions, but none of them are part of that loop, so carrying them on
+ * every nav scan is noise.
+ *
+ * Hide-not-delete: a listed URL drops out of the default sidebar and folds
+ * into an "Everything" group one click away. Routes, plan gates, permission
+ * checks, breadcrumbs and direct links are all untouched — removing the key
+ * from this map (or deleting it) restores the row exactly as before.
+ */
+const SIDEBAR_HIDE: readonly string[] = [
+    "/app/crm/pipelines",
+    "/app/crm/deals",
+    "/app/crm/tasks",
+    "/app/crm/meetings",
+    "/app/automations",
+    "/app/api-keys",
+    "/app/audit",
+];
+
+const HIDE_SET = new Set(SIDEBAR_HIDE);
+
 interface NavSection {
     label: string;
     items: NavItem[];
@@ -1073,6 +1099,12 @@ export function AppNav({ open = false, onClose }: { open?: boolean; onClose?: ()
     // off-canvas drawer with the whole viewport to itself, so collapsing it
     // there would only take away the labels for nothing.
     const isMobile = useIsMobile();
+    // The fold's contents: every hidden row in its original nav order, so the
+    // "Everything" group reads the same as the sidebar it retired them from.
+    const everythingItems = useMemo(
+        () => sections.flatMap((s) => s.items).filter((it) => HIDE_SET.has(it.url)),
+        [],
+    );
     const collapsed = useAppStore((s) => s.navCollapsed);
     const toggleSidebar = useAppStore((s) => s.toggleSidebar);
     const iconOnly = collapsed && !isMobile;
@@ -1138,11 +1170,16 @@ export function AppNav({ open = false, onClose }: { open?: boolean; onClose?: ()
                 {sections.map((s, i) => (
                     <Section
                         key={s.label}
-                        section={s}
+                        section={{ ...s, items: s.items.filter((it) => !HIDE_SET.has(it.url)) }}
                         first={i === 0 && topItems.length === 0}
                         collapsed={iconOnly}
                     />
                 ))}
+                {/* The fold: everything the focus flag retired, one click away,
+                    in its original order. Routes and gates are untouched. */}
+                {everythingItems.length > 0 && (
+                    <Section section={{ label: "Everything", items: everythingItems }} collapsed={iconOnly} />
+                )}
             </nav>
 
             <div className="border-t border-slate-200/60 py-1 shrink-0">

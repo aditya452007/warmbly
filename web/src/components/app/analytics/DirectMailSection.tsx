@@ -12,7 +12,8 @@
 // measured, so the denominator is stated on the card instead.
 
 import { Link } from "react-router-dom";
-import { EyeIcon, InboxIcon, MailIcon, ReplyIcon } from "lucide-react";
+import { ChevronRightIcon, EyeIcon, InboxIcon, MailIcon, ReplyIcon } from "lucide-react";
+import { useState } from "react";
 
 import { EmptyBlock, SectionBar, Stat, StatStrip } from "@/components/layout/Page";
 import { MultiTrend, type TrendSeries } from "@/components/ui/charts";
@@ -36,6 +37,27 @@ function duration(minutes: number | undefined): string {
     return `${(hours / 24).toFixed(1)} d`;
 }
 
+// The folded row sits directly against the next section's header, so it drops
+// its own bottom hairline and takes a hover cue — it behaves like a button.
+function headerClass(collapsed: boolean): string {
+    return collapsed ? "border-b-0 hover:bg-slate-50/60 cursor-pointer select-none" : "";
+}
+
+// The "Show" affordance on the folded single-row state.
+function CollapseHint({ onClick, title }: { onClick: () => void; title?: string }) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            title={title}
+            className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-900 transition-colors"
+        >
+            Show
+            <ChevronRightIcon className="w-3 h-3" />
+        </button>
+    );
+}
+
 function SkeletonRows({ rows = 3 }: { rows?: number }) {
     return (
         <div className="divide-y divide-slate-200/60">
@@ -50,8 +72,13 @@ function SkeletonRows({ rows = 3 }: { rows?: number }) {
     );
 }
 
-export default function DirectMailSection({ period }: { period: string }) {
-    const q = useDirectMail(period);
+// `collapsed` folds the whole section behind its own header row: the caller
+// keeps the choice of metric out of the default scroll, one click restores it,
+// and the data request stays parked until the section is actually expanded.
+export default function DirectMailSection({ period, collapsed: collapsedProp = false }: { period: string; collapsed?: boolean }) {
+    const [expanded, setExpanded] = useState(false);
+    const collapsed = collapsedProp && !expanded;
+    const q = useDirectMail(period, !collapsed);
     const d: DirectMailAnalytics | undefined = q.data;
     const vol = d?.volume;
     const tr = d?.tracking;
@@ -63,14 +90,38 @@ export default function DirectMailSection({ period }: { period: string }) {
     const labels = (d?.daily_trend ?? []).map((x) => x.date);
 
     if (q.isError) {
+        if (collapsed) {
+            return (
+                <SectionBar label="Direct mail" className={headerClass(true)}>
+                    <CollapseHint onClick={() => setExpanded(true)} />
+                </SectionBar>
+            );
+        }
         return (
             <>
-                <SectionBar label="Direct mail" />
+                <SectionBar label="Direct mail">
+                    <button
+                        type="button"
+                        onClick={() => setExpanded(false)}
+                        className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-900 transition-colors"
+                    >
+                        Hide
+                        <ChevronRightIcon className="w-3 h-3" />
+                    </button>
+                </SectionBar>
                 <EmptyBlock
                     title="Couldn't load direct mail"
                     body="The volume and reply figures are read from your synced mailboxes. Refresh to try again."
                 />
             </>
+        );
+    }
+
+    if (collapsed) {
+        return (
+            <SectionBar label="Direct mail" className={headerClass(true)}>
+                <CollapseHint onClick={() => setExpanded(true)} title="Show direct mail analytics" />
+            </SectionBar>
         );
     }
 
@@ -83,6 +134,14 @@ export default function DirectMailSection({ period }: { period: string }) {
                 >
                     Open sent mail
                 </Link>
+                <button
+                    type="button"
+                    onClick={() => setExpanded(false)}
+                    className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-900 transition-colors"
+                >
+                    Hide
+                    <ChevronRightIcon className="w-3 h-3" />
+                </button>
             </SectionBar>
 
             {/* Volume: measured from the mailbox itself, so it needs no opt-in
