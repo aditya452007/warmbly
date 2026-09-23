@@ -64,6 +64,19 @@ const ConfigSchema = z.object({
   // Reply sync: distinct recipient addresses polled per pass. Bounds the
   // Warmbly unibox read fan-out on large queues.
   REPLY_POLL_BATCH: z.coerce.number().int().min(1).max(100).default(25),
+  // Reply inbox worker (Phase 10). One process-wide loop polls Warmbly's
+  // unibox for replies to bridge-sent threads. Warmbly owns mailbox sync;
+  // the bridge only consumes the normalized unibox representation. Parsed
+  // strictly: z.coerce.boolean() would read the string "false" as true.
+  REPLY_WORKER_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .default(false)
+    .transform((v) => (typeof v === "boolean" ? v : ["1", "true", "yes", "on"].includes(v.trim().toLowerCase()))),
+  REPLY_WORKER_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
+  // A queue's reply analysis lease. If the worker dies mid-analysis the lease
+  // expires and the next tick re-claims the reply; idempotency keys keep the
+  // resume from forking a second draft.
+  REPLY_WORKER_LEASE_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
 });
 
 export type BridgeConfig = z.infer<typeof ConfigSchema>;

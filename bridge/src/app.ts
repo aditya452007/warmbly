@@ -6,10 +6,12 @@ import { StubAiProvider } from "./ai/stubProvider.js";
 import { AgentRuns, CampaignRuns, DiscoveryJobs, Drafts, Events, Leads, Research, Sends } from "./store/repositories.js";
 import { ContactSignals, DayCounters, FollowupDrafts, SendItems, SendQueues, type SendQueueRow } from "./store/sendQueue.js";
 import { InboundReplies, ReplyPolls, ResponseDrafts } from "./store/replies.js";
+import { log } from "./log.js";
 import { WarmblyClient } from "./warmbly/client.js";
 import { BridgeOrchestrator } from "./orchestrate/orchestrator.js";
 import { BulkSender } from "./orchestrate/bulkSend.js";
 import { ReplySync } from "./orchestrate/replies.js";
+import { ReplyWorker, queueIdsWithSentInitials } from "./orchestrate/replyWorker.js";
 import { createEmailTransport } from "./email/transport/factory.js";
 import type { EmailTransport } from "./email/transport/types.js";
 
@@ -22,6 +24,7 @@ export interface BridgeApp {
   orchestrator: BridgeOrchestrator;
   bulkSender: BulkSender;
   replySync: ReplySync;
+  replyWorker: ReplyWorker;
   getEmailTransport: () => EmailTransport | null;
 }
 
@@ -124,7 +127,58 @@ export function buildOrchestrator(): BridgeApp {
       }),
     sendThreaded: (queueId, msg) => bulkSender.sendThreadedReply(queueId, msg),
   });
-  return { config, db, orchestrator, bulkSender, replySync, getEmailTransport };
+  // Phase 10: one process-wide reply inbox worker. Warmbly owns mailbox sync;
+  // this worker only consumes the normalized unibox representation through
+  // ReplySync. It claims claimable replies (lease-guarded), runs OpenCode
+  // analysis, and auto-drafts NEEDS_REVIEW responses where the policy allows
+  // — it never sends. Restart-safe: leases expire and dedupe keys hold.
+  const repliesStore = new InboundReplies(db);
+  const responsesStore = new ResponseDrafts(db);
+  const eventsStore = orchestratorDeps.events;
+  const replyWorker: ReplyWorker = new ReplyWorker({
+    config,
+    db,
+    replies: repliesStore,
+    responses: responsesStore,
+    events: eventsStore,
+    queueIdsWithSent: () => queueIdsWithSentInitials(db),
+    // Ingestion: bounded unibox polls for every ACTIVE queue, one pass per
+    // tick. Failures are logged by ReplySync and retried next tick; nothing
+    // is fabricated when Warmbly or the mailbox is unavailable.
+    pollQueues: async () => {
+      for (const queue of queues.listActive()) {
+        try {
+          await replySync.pollQueueReplies(queue.id);
+        } catch (err) {
+          log("warn", "reply worker poll failed", { queueId: queue.id, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    },
+    processReply: async (reply) => {
+      await replySync.analyzeReply(reply.id);
+      // Auto-draft exactly what the policy permits: positive/neutral above
+      // the confidence floor with requires_response from the model. Anything
+      // else waits for a human instruction in the review UI. Drafts are
+      // NEEDS_REVIEW; nothing here ever sends.
+      const fresh = repliesStore.get(reply.id);
+      if (!fresh?.analyzed_at || !fresh.requires_response) return true;
+      if (fresh.analysis_intent !== "positive" && fresh.analysis_intent !== "neutral") return true;
+      const existing = responsesStore.getByReply(fresh.id);
+      if (existing && existing.status !== "GENERATION_RETRYABLE") return true;
+      try {
+        await replySync.draftResponse(fresh.id);
+      } catch (err) {
+        // draftResponse parks its own retryable/failed state; a policy
+        // refusal (negative/low-confidence without instruction) is fine —
+        // the reply stays analyzed and awaits a human.
+        if (!/never receive drafted responses|explicit operator instruction/.test(err instanceof Error ? err.message : String(err))) {
+          log("warn", "reply auto-draft failed", { replyId: fresh.id, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      return true;
+    },
+  });
+  return { config, db, orchestrator, bulkSender, replySync, replyWorker, getEmailTransport };
 }
 
 export { closeDb };

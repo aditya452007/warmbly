@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { BridgeOrchestrator } from "./orchestrate/orchestrator.js";
 import type { BulkSender } from "./orchestrate/bulkSend.js";
 import type { ReplySync } from "./orchestrate/replies.js";
+import type { ReplyWorker } from "./orchestrate/replyWorker.js";
 import { RunRequestSchema } from "./domain/validate.js";
 
 // Small local control plane. No auth: it binds localhost only (see index.ts)
@@ -14,6 +15,7 @@ export interface BridgeServerDeps {
   checkEmail?: () => Promise<{ provider: string; configured: boolean; connection: "ok" | "error" | "unconfigured" }>;
   bulkSender?: BulkSender;
   replySync?: ReplySync;
+  replyWorker?: ReplyWorker;
 }
 
 export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeServerDeps): Hono {
@@ -521,10 +523,30 @@ export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeS
     const replies = deps?.replySync;
     if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
     try {
+      // Approve means "this draft is final" — it does NOT send. The send is
+      // the separate, explicit POST /send below.
       return c.json({ response: await replies.approveResponse(c.req.param("responseId")) });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : "cannot approve response" }, 400);
     }
+  });
+
+  app.post("/api/responses/:responseId/send", async (c) => {
+    const replies = deps?.replySync;
+    if (!replies) return c.json({ error: "reply sync is not wired" }, 501);
+    try {
+      return c.json({ response: await replies.sendResponse(c.req.param("responseId")) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "cannot send response" }, 400);
+    }
+  });
+
+  // Inbox worker status: connection state, last tick, pipeline counters.
+  // Never exposes secrets — it reports counts and timestamps only.
+  app.get("/api/reply-worker/status", (c) => {
+    const worker = deps?.replyWorker;
+    if (!worker) return c.json({ error: "reply worker is not wired" }, 501);
+    return c.json({ status: worker.status() });
   });
 
   app.post("/api/responses/:responseId/reject", (c) => {

@@ -108,12 +108,14 @@ export const OutreachSchema = z.object({
 // Reply analysis output. Intent vocabulary mirrors Warmbly's replyclassify
 // classes (positive/negative/neutral/unsubscribe + automated) so the two
 // systems agree about what a reply means; the bridge never re-implements
-// Warmbly's classifier for native threads.
+// Warmbly's classifier for native threads. requires_response gates drafting:
+// only a human-answerable reply may ever receive a response draft.
 export const ReplyAnalysisSchema = z.object({
   intent: z.enum(["positive", "negative", "neutral", "unsubscribe", "automated"]),
   confidence: z.number().min(0).max(1),
   summary: z.string().trim().min(1).max(500),
   suggested_action: z.string().trim().min(1).max(300),
+  requires_response: z.boolean().default(false),
 });
 
 export function isHttpUrl(s: string): boolean {

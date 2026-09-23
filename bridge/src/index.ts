@@ -5,7 +5,7 @@ import { createBridgeApp } from "./server.js";
 import { SmtpError } from "./email/transport/types.js";
 
 async function main(): Promise<void> {
-  const { config, db, orchestrator, bulkSender, replySync, getEmailTransport } = buildOrchestrator();
+  const { config, db, orchestrator, bulkSender, replySync, replyWorker, getEmailTransport } = buildOrchestrator();
   const resumed = orchestrator.recover();
   if (resumed.length > 0) {
     log("info", "recovered stale leases", { count: resumed.length });
@@ -14,9 +14,15 @@ async function main(): Promise<void> {
   if (resumedQueues.length > 0) {
     log("info", "resumed bulk send queues", { count: resumedQueues.length });
   }
+  if (config.REPLY_WORKER_ENABLED) {
+    replyWorker.start();
+  } else {
+    log("info", "reply worker disabled (REPLY_WORKER_ENABLED=false); replies are analyzed on poll or manual review", {});
+  }
   const app = createBridgeApp(orchestrator, {
     bulkSender,
     replySync,
+    replyWorker,
     checkEmail: async () => {
       const emailTransport = getEmailTransport();
       if (!emailTransport) {
@@ -37,6 +43,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     log("info", `received ${signal}, shutting down`);
+    replyWorker.stop();
     await orchestrator.shutdown();
     bulkSender.shutdown();
     try {

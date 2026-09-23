@@ -20,9 +20,16 @@ export function openBridgeDb(dbPath: string): BridgeDb {
   db.exec(readFileSync(schemaPath, "utf8"));
   // Forward-only additive migrations for databases created before a column
   // existed. CREATE TABLE IF NOT EXISTS cannot add columns to old files.
+  // Existing inbound_replies rows predate Phase 10: they were ingested from
+  // Warmbly polls, so they read as production rows already matched.
   for (const [table, column, ddl] of [
     ["outreach_drafts", "source", "TEXT NOT NULL DEFAULT 'ai'"],
     ["outreach_drafts", "version", "INTEGER NOT NULL DEFAULT 1"],
+    ["inbound_replies", "process_state", "TEXT NOT NULL DEFAULT 'RECEIVED'"],
+    ["inbound_replies", "source", "TEXT NOT NULL DEFAULT 'warmbly'"],
+    ["inbound_replies", "error_message", "TEXT"],
+    ["inbound_replies", "lease_until", "TEXT"],
+    ["inbound_replies", "requires_response", "INTEGER"],
   ] as const) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === column)) {

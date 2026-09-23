@@ -15,6 +15,8 @@ import {
     useQueueReplies,
     useQueueResponses,
     useRejectResponse,
+    useReplyWorkerStatus,
+    useSendResponse,
 } from "@/lib/api/hooks/app/bridge/useBridgeReview";
 import type { BridgeReply, BridgeResponse } from "@/lib/api/bridge";
 import { cn } from "@/lib/utils";
@@ -35,12 +37,29 @@ function intentTone(intent: string | null): string {
     }
 }
 
+function stateTone(state: string): string {
+    switch (state) {
+        case "ANALYZED":
+            return "text-emerald-600";
+        case "AMBIGUOUS":
+        case "FAILED":
+            return "text-red-600";
+        case "RETRYABLE":
+        case "ANALYZING":
+            return "text-amber-600";
+        default:
+            return "text-slate-400";
+    }
+}
+
 export default function RepliesPanel({ runId }: { runId: string }) {
     const confirm = useConfirm();
     const repliesQuery = useQueueReplies(runId);
     const responsesQuery = useQueueResponses(runId);
+    const workerQuery = useReplyWorkerStatus(30_000);
     const replies = (repliesQuery.data?.replies ?? []) as BridgeReply[];
     const metrics = repliesQuery.data?.metrics;
+    const worker = workerQuery.data?.status;
     const responsesData = responsesQuery.data?.responses;
     const responseByReply = React.useMemo(
         () => new Map((responsesData ?? [] as BridgeResponse[]).map((r) => [r.reply_id, r])),
@@ -51,6 +70,7 @@ export default function RepliesPanel({ runId }: { runId: string }) {
     const analyze = useAnalyzeReply();
     const draft = useDraftResponse();
     const approve = useApproveResponse();
+    const send = useSendResponse();
     const reject = useRejectResponse();
 
     const [instructionFor, setInstructionFor] = React.useState<string | null>(null);
@@ -69,6 +89,18 @@ export default function RepliesPanel({ runId }: { runId: string }) {
         <>
             <SectionBar label="Replies" count={metrics?.replies} />
             <PageBody>
+                {worker && (
+                    <div className="px-5 py-2 flex items-center gap-3 border-b border-slate-200/60 text-[11.5px] text-slate-500">
+                        <span className={cn("inline-flex items-center gap-1 font-medium", worker.connected ? "text-emerald-600" : worker.state === "ERROR" ? "text-red-600" : "text-slate-400")}>
+                            <span className={cn("w-1.5 h-1.5 rounded-full", worker.connected ? "bg-emerald-500" : worker.state === "ERROR" ? "bg-red-500" : "bg-slate-300")} />
+                            Inbox worker: {worker.enabled ? (worker.state === "RUNNING" ? "connected" : worker.state.toLowerCase()) : "disabled"}
+                        </span>
+                        {worker.lastTickAt && <span>last sync {new Date(worker.lastTickAt).toLocaleTimeString()}</span>}
+                        <span className="ml-auto">
+                            {worker.claimable} pending · {worker.analyzing} analyzing · {worker.awaitingApproval} awaiting approval{worker.ambiguous > 0 ? ` · ${worker.ambiguous} ambiguous` : ""}{worker.failed > 0 ? ` · ${worker.failed} failed` : ""}
+                        </span>
+                    </div>
+                )}
                 <div className="px-5 py-3 flex items-center gap-3">
                     <button
                         type="button"
@@ -97,9 +129,14 @@ export default function RepliesPanel({ runId }: { runId: string }) {
                                 <div key={r.id} className="px-5 py-3 space-y-1.5">
                                     <div className="flex items-center gap-2 min-w-0">
                                         <span className="text-[12.5px] text-slate-900 font-medium truncate">{r.subject || "(no subject)"}</span>
-                                        <span className={cn("text-[10px] uppercase tracking-[0.1em] font-medium shrink-0", intentTone(r.analysis_intent))}>
-                                            {r.analysis_intent ?? "unanalyzed"}
+                                        <span className={cn("text-[10px] uppercase tracking-[0.1em] font-medium shrink-0", stateTone(r.process_state))}>
+                                            {r.process_state}
                                         </span>
+                                        {r.analysis_intent && (
+                                            <span className={cn("text-[10px] uppercase tracking-[0.1em] font-medium shrink-0", intentTone(r.analysis_intent))}>
+                                                {r.analysis_intent}
+                                            </span>
+                                        )}
                                         {r.analysis_confidence != null && (
                                             <span className="text-[11px] text-slate-400 shrink-0">{Math.round(r.analysis_confidence * 100)}%</span>
                                         )}
@@ -173,15 +210,11 @@ export default function RepliesPanel({ runId }: { runId: string }) {
                                                 <span className="text-[11.5px] text-slate-500 truncate">Draft: {response.subject}</span>
                                                 <button
                                                     type="button"
-                                                    onClick={() => {
-                                                        confirm?.show(`Send this threaded response to ${r.from_email}?`, () =>
-                                                            runMutation(() => approve.mutateAsync(response.id), "Response sent"),
-                                                        );
-                                                    }}
+                                                    onClick={() => runMutation(() => approve.mutateAsync(response.id), "Response approved and ready")}
                                                     disabled={approve.isPending}
                                                     className="h-6 px-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-[11.5px] font-medium"
                                                 >
-                                                    Approve &amp; send
+                                                    Approve
                                                 </button>
                                                 <button
                                                     type="button"
@@ -189,6 +222,23 @@ export default function RepliesPanel({ runId }: { runId: string }) {
                                                     className="h-6 px-2 rounded-md border border-slate-300 text-[11.5px] font-medium text-slate-600 hover:bg-slate-50"
                                                 >
                                                     Reject
+                                                </button>
+                                            </>
+                                        )}
+                                        {response && response.status === "APPROVED" && (
+                                            <>
+                                                <span className="text-[11.5px] text-emerald-600 font-medium">Approved — ready to send</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        confirm?.show(`Send this threaded response to ${r.from_email}?`, () =>
+                                                            runMutation(() => send.mutateAsync(response.id), "Response sent"),
+                                                        );
+                                                    }}
+                                                    disabled={send.isPending}
+                                                    className="h-6 px-2 rounded-md bg-sky-600 hover:bg-sky-500 text-white text-[11.5px] font-medium"
+                                                >
+                                                    Send now
                                                 </button>
                                             </>
                                         )}

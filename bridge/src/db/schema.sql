@@ -243,15 +243,34 @@ CREATE TABLE IF NOT EXISTS inbound_replies (
   subject TEXT NOT NULL DEFAULT '',
   body_text TEXT NOT NULL DEFAULT '',
   received_at TEXT,
+  -- Bridge-owned AI processing state (NOT Warmbly's mailbox state):
+  -- RECEIVED -> MATCHED -> ANALYZING -> ANALYZED, plus RETRYABLE/FAILED for
+  -- transient/permanent failures and AMBIGUOUS when ancestry cannot resolve
+  -- a single parent safely.
+  process_state TEXT NOT NULL DEFAULT 'RECEIVED',
+  -- ProductionInboundReply rows come from Warmbly unibox polls; test-only
+  -- rows (deterministic tests) carry source 'test'. Production never reads
+  -- a 'test' row for scheduling.
+  source TEXT NOT NULL DEFAULT 'warmbly',
+  error_message TEXT,
+  -- Analysis lease: the inbox worker claims a reply before its OpenCode
+  -- session; an expired lease means the previous worker died mid-analysis
+  -- and the reply is re-claimable (dedupe keys make the retry safe).
+  lease_until TEXT,
   analysis_intent TEXT,
   analysis_confidence REAL,
   analysis_summary TEXT,
   analysis_action TEXT,
+  -- The model's judgment that a human should answer this reply. Drafting
+  -- stays allowed only for positive/neutral above the confidence floor;
+  -- this flag is the explicit second gate.
+  requires_response INTEGER,
   analyzed_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE (queue_id, warmbly_id)
 );
 CREATE INDEX IF NOT EXISTS idx_replies_queue_lead ON inbound_replies(queue_id, lead_id);
+CREATE INDEX IF NOT EXISTS idx_replies_state ON inbound_replies(process_state);
 
 -- Human-gated responses to inbound replies. AI drafts plain text only;
 -- approval sends exactly one threaded answer through the normal send gates

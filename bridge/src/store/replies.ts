@@ -8,6 +8,31 @@ export const REPLY_INTENT = {
   AUTOMATED: "automated",
 } as const;
 
+// Bridge-owned AI processing states for an inbound reply. Warmbly owns
+// mailbox/message state (read/unread, folders); these track only what the
+// bridge's AI pipeline has done. AWAITING_APPROVAL lives on the response
+// draft, not here: a reply's terminal AI state is ANALYZED (drafted or
+// deliberately not drafted) or FAILED/AMBIGUOUS (human decision needed).
+export const REPLY_PROCESS_STATE = {
+  RECEIVED: "RECEIVED",
+  MATCHED: "MATCHED",
+  ANALYZING: "ANALYZING",
+  ANALYZED: "ANALYZED",
+  RETRYABLE: "RETRYABLE",
+  FAILED: "FAILED",
+  AMBIGUOUS: "AMBIGUOUS",
+  UNMATCHED: "UNMATCHED",
+} as const;
+
+export type ReplyProcessState = (typeof REPLY_PROCESS_STATE)[keyof typeof REPLY_PROCESS_STATE];
+
+// Production rows are ingested from Warmbly's unibox. 'test' rows exist only
+// inside deterministic tests; production scheduling never claims them.
+export const REPLY_SOURCE = {
+  WARMBLY: "warmbly",
+  TEST: "test",
+} as const;
+
 export const RESPONSE_STATUS = {
   NEEDS_REVIEW: "NEEDS_REVIEW",
   APPROVED: "APPROVED",
@@ -39,10 +64,15 @@ export interface InboundReplyRow {
   subject: string;
   body_text: string;
   received_at: string | null;
+  process_state: string;
+  source: string;
+  error_message: string | null;
+  lease_until: string | null;
   analysis_intent: string | null;
   analysis_confidence: number | null;
   analysis_summary: string | null;
   analysis_action: string | null;
+  requires_response: number | null;
   analyzed_at: string | null;
   created_at: string;
 }
@@ -63,13 +93,14 @@ export class InboundReplies {
     subject: string;
     bodyText: string;
     receivedAt?: string | null;
+    source?: string;
   }): { duplicate: boolean; id: string } {
     try {
       (this.db.prepare(
         `INSERT INTO inbound_replies
           (id, queue_id, lead_id, warmbly_id, rfc_message_id, thread_id,
-           from_email, subject, body_text, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           from_email, subject, body_text, received_at, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ) as unknown as AnyStatement).run(
         args.id,
         args.queueId,
@@ -81,6 +112,7 @@ export class InboundReplies {
         args.subject,
         args.bodyText,
         args.receivedAt ?? null,
+        args.source ?? REPLY_SOURCE.WARMBLY,
       );
       return { duplicate: false, id: args.id };
     } catch (err) {
@@ -122,10 +154,91 @@ export class InboundReplies {
     return row.n > 0;
   }
 
-  storeAnalysis(id: string, analysis: { intent: string; confidence: number; summary: string; action: string }): void {
+  storeAnalysis(id: string, analysis: { intent: string; confidence: number; summary: string; action: string; requiresResponse: boolean }): void {
     (this.db.prepare(
-      "UPDATE inbound_replies SET analysis_intent = ?, analysis_confidence = ?, analysis_summary = ?, analysis_action = ?, analyzed_at = ? WHERE id = ?",
-    ) as unknown as AnyStatement).run(analysis.intent, analysis.confidence, analysis.summary, analysis.action, utcNow(), id);
+      "UPDATE inbound_replies SET analysis_intent = ?, analysis_confidence = ?, analysis_summary = ?, analysis_action = ?, requires_response = ?, analyzed_at = ?, process_state = ?, lease_until = NULL, error_message = NULL WHERE id = ?",
+    ) as unknown as AnyStatement).run(analysis.intent, analysis.confidence, analysis.summary, analysis.action, analysis.requiresResponse ? 1 : 0, utcNow(), REPLY_PROCESS_STATE.ANALYZED, id);
+  }
+
+  // Lease semantics: state transitions are CAS-style so a crashed worker's
+  // stale claim cannot overwrite a fresh one. claimForAnalysis flips
+  // RECEIVED/MATCHED/RETRYABLE (or an expired-lease ANALYZING left by a dead
+  // worker) -> ANALYZING only when no other worker holds an unexpired lease;
+  // markAnalysisFailed/Retryable release it.
+  claimForAnalysis(id: string, leaseUntil: string): boolean {
+    const info = (this.db.prepare(
+      `UPDATE inbound_replies SET process_state = ?, lease_until = ?, error_message = NULL
+       WHERE id = ? AND analyzed_at IS NULL
+         AND process_state IN (?, ?, ?)
+         AND (lease_until IS NULL OR lease_until <= ?)`,
+    ) as unknown as AnyStatement).run(
+      REPLY_PROCESS_STATE.ANALYZING,
+      leaseUntil,
+      id,
+      REPLY_PROCESS_STATE.RECEIVED,
+      REPLY_PROCESS_STATE.MATCHED,
+      REPLY_PROCESS_STATE.RETRYABLE,
+      utcNow(),
+    );
+    if (Number(info.changes) > 0) return true;
+    // Second chance: an ANALYZING row whose lease expired is the signature
+    // of a crashed worker; it is safe to re-claim (dedupe keys hold).
+    const reclaim = (this.db.prepare(
+      `UPDATE inbound_replies SET process_state = ?, lease_until = ?, error_message = NULL
+       WHERE id = ? AND analyzed_at IS NULL
+         AND process_state = ?
+         AND lease_until IS NOT NULL AND lease_until <= ?`,
+    ) as unknown as AnyStatement).run(
+      REPLY_PROCESS_STATE.ANALYZING,
+      leaseUntil,
+      id,
+      REPLY_PROCESS_STATE.ANALYZING,
+      utcNow(),
+    );
+    return Number(reclaim.changes) > 0;
+  }
+
+  // Rows claimable by the inbox worker: fresh work plus rows whose previous
+  // analyst died (ANALYZING with an expired lease). Production scheduling
+  // claims only warmbly-sourced rows; 'test' rows are analyzed only when a
+  // test drives the pipeline explicitly (analyzeReply is called directly).
+  listClaimable(now: string, limit: number): InboundReplyRow[] {
+    return (this.db.prepare(
+      `SELECT * FROM inbound_replies
+       WHERE analyzed_at IS NULL AND source = ?
+         AND process_state IN (?, ?, ?, ?)
+         AND (lease_until IS NULL OR lease_until <= ?)
+       ORDER BY created_at ASC, id ASC LIMIT ?`,
+    ) as unknown as AnyStatement).all(
+      REPLY_SOURCE.WARMBLY,
+      REPLY_PROCESS_STATE.RECEIVED,
+      REPLY_PROCESS_STATE.MATCHED,
+      REPLY_PROCESS_STATE.RETRYABLE,
+      REPLY_PROCESS_STATE.ANALYZING,
+      now,
+      limit,
+    ) as InboundReplyRow[];
+  }
+
+  setProcessState(id: string, state: string, error?: string): void {
+    (this.db.prepare(
+      "UPDATE inbound_replies SET process_state = ?, error_message = COALESCE(?, error_message), lease_until = NULL WHERE id = ?",
+    ) as unknown as AnyStatement).run(state, error ?? null, id);
+  }
+
+  markAnalysisFailed(id: string, state: "RETRYABLE" | "FAILED", error: string): void {
+    (this.db.prepare(
+      "UPDATE inbound_replies SET process_state = ?, error_message = ?, lease_until = NULL WHERE id = ?",
+    ) as unknown as AnyStatement).run(state, error.slice(0, 500), id);
+  }
+
+  countsByProcessState(queueId: string): Record<string, number> {
+    const rows = (this.db.prepare(
+      "SELECT process_state, COUNT(*) AS n FROM inbound_replies WHERE queue_id = ? GROUP BY process_state",
+    ) as unknown as AnyStatement).all(queueId) as Array<{ process_state: string; n: number }>;
+    const out: Record<string, number> = {};
+    for (const row of rows) out[row.process_state] = row.n;
+    return out;
   }
 
   countAnalyzed(queueId: string): number {

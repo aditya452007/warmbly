@@ -10,6 +10,7 @@ import {
     getBridgeDraft,
     getBridgePreview,
     getBridgeStatus,
+    getReplyWorkerStatus,
     getSendQueueMetrics,
     listBridgeDrafts,
     listBridgeRuns,
@@ -26,6 +27,7 @@ import {
     resumeSendQueue,
     saveBridgeDraft,
     sendBridgeDraft,
+    sendResponse,
     startSendQueue,
 } from "@/lib/api/bridge";
 
@@ -287,6 +289,24 @@ export function useApproveResponse() {
     return useMutation({
         mutationFn: (id: string) => approveResponse(id),
         onSuccess: () => invalidate(),
+    });
+}
+
+export function useSendResponse() {
+    const invalidate = useInvalidateReplies();
+    return useMutation({
+        mutationFn: (id: string) => sendResponse(id),
+        onSuccess: () => invalidate(),
+    });
+}
+
+export function useReplyWorkerStatus(refetchInterval?: number) {
+    return useQuery({
+        queryKey: [KEY, "reply-worker"],
+        queryFn: getReplyWorkerStatus,
+        staleTime: 5_000,
+        refetchInterval,
+        retry: false,
     });
 }
 

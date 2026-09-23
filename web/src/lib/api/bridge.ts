@@ -224,10 +224,14 @@ export interface BridgeReply {
     subject: string;
     body_text: string;
     received_at: string | null;
+    process_state: string;
+    source: string;
+    error_message: string | null;
     analysis_intent: string | null;
     analysis_confidence: number | null;
     analysis_summary: string | null;
     analysis_action: string | null;
+    requires_response: number | null;
     analyzed_at: string | null;
 }
 
@@ -263,6 +267,29 @@ export function draftResponse(replyId: string, instruction = ""): Promise<{ resp
 
 export function approveResponse(responseId: string): Promise<{ response: BridgeResponse }> {
     return bridgeFetch(`/api/responses/${responseId}/approve`, { method: "POST" });
+}
+
+export function sendResponse(responseId: string): Promise<{ response: BridgeResponse }> {
+    return bridgeFetch(`/api/responses/${responseId}/send`, { method: "POST" });
+}
+
+export interface BridgeReplyWorkerStatus {
+    enabled: boolean;
+    state: "STOPPED" | "RUNNING" | "ERROR";
+    connected: boolean;
+    lastTickAt: string | null;
+    lastError: string | null;
+    claimable: number;
+    analyzing: number;
+    awaitingApproval: number;
+    failed: number;
+    ambiguous: number;
+    processedTotal: number;
+    failureTotal: number;
+}
+
+export function getReplyWorkerStatus(): Promise<{ status: BridgeReplyWorkerStatus }> {
+    return bridgeFetch(`/api/reply-worker/status`);
 }
 
 export function rejectResponse(responseId: string): Promise<{ response: BridgeResponse }> {
