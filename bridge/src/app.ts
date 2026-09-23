@@ -5,7 +5,7 @@ import { OpenCodeAiProvider } from "./ai/opencodeProvider.js";
 import { StubAiProvider } from "./ai/stubProvider.js";
 import { AgentRuns, CampaignRuns, DiscoveryJobs, Drafts, Events, Leads, Research, Sends } from "./store/repositories.js";
 import { ContactSignals, DayCounters, FollowupDrafts, SendItems, SendQueues, type SendQueueRow } from "./store/sendQueue.js";
-import { InboundReplies, ReplyPolls, ResponseDrafts } from "./store/replies.js";
+import { InboundReplies, ReplyPolls, ResponseDrafts, AUTO_DRAFT_INTENTS, RESPONSE_STATUS } from "./store/replies.js";
 import { log } from "./log.js";
 import { WarmblyClient } from "./warmbly/client.js";
 import { BridgeOrchestrator } from "./orchestrate/orchestrator.js";
@@ -162,9 +162,9 @@ export function buildOrchestrator(): BridgeApp {
       // NEEDS_REVIEW; nothing here ever sends.
       const fresh = repliesStore.get(reply.id);
       if (!fresh?.analyzed_at || !fresh.requires_response) return true;
-      if (fresh.analysis_intent !== "positive" && fresh.analysis_intent !== "neutral") return true;
+      if (fresh.analysis_intent && !AUTO_DRAFT_INTENTS.has(fresh.analysis_intent)) return true;
       const existing = responsesStore.getByReply(fresh.id);
-      if (existing && existing.status !== "GENERATION_RETRYABLE") return true;
+      if (existing && existing.status !== RESPONSE_STATUS.GENERATION_RETRYABLE) return true;
       try {
         await replySync.draftResponse(fresh.id);
       } catch (err) {

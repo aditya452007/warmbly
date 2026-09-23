@@ -104,7 +104,7 @@ describe("reply worker claim semantics", () => {
     const processed: string[] = [];
     const w = worker(fx, async (rid) => {
       processed.push(rid);
-      fx.replies.storeAnalysis(rid, { intent: "positive", confidence: 0.9, summary: "s", action: "a", requiresResponse: true });
+      fx.replies.storeAnalysis(rid, { intent: "INTERESTED", confidence: 0.9, summary: "s", action: "a", requiresResponse: true });
       return true;
     });
     const tick = await w.tick();
@@ -150,7 +150,7 @@ describe("reply worker claim semantics", () => {
     let calls = 0;
     const w = worker(fx, async (rid) => {
       calls += 1;
-      fx.replies.storeAnalysis(rid, { intent: "neutral", confidence: 0.7, summary: "s", action: "a", requiresResponse: false });
+      fx.replies.storeAnalysis(rid, { intent: "QUESTION", confidence: 0.7, summary: "s", action: "a", requiresResponse: false });
       return true;
     });
     const tick = await w.tick();
@@ -169,7 +169,7 @@ describe("reply worker failure handling", () => {
     const w = worker(fx, async (rid) => {
       calls += 1;
       if (calls === 1) throw new Error("reply analysis failed: ai_unavailable");
-      fx.replies.storeAnalysis(rid, { intent: "positive", confidence: 0.8, summary: "s", action: "a", requiresResponse: true });
+      fx.replies.storeAnalysis(rid, { intent: "INTERESTED", confidence: 0.8, summary: "s", action: "a", requiresResponse: true });
       return true;
     });
     await w.tick();
@@ -213,13 +213,13 @@ describe("reply worker failure handling", () => {
     const fx = fixture();
     const id = seedReply(fx);
     const w = worker(fx, async (rid) => {
-      fx.replies.storeAnalysis(rid, { intent: "unsubscribe", confidence: 0.99, summary: "opts out", action: "suppress", requiresResponse: false });
+      fx.replies.storeAnalysis(rid, { intent: "UNSUBSCRIBE", confidence: 0.99, summary: "opts out", action: "suppress", requiresResponse: false });
       return true;
     });
     await w.tick();
     const row = fx.replies.get(id);
     expect(row?.process_state).toBe("ANALYZED");
-    expect(row?.analysis_intent).toBe("unsubscribe");
+    expect(row?.analysis_intent).toBe("UNSUBSCRIBE");
     expect(row?.requires_response).toBe(0);
     w.stop();
   });

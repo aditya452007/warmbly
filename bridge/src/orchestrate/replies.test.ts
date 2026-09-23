@@ -83,7 +83,7 @@ function setup(opts: { mode?: string; provider?: string; transportName?: string 
       return full;
     },
   } as unknown as WarmblyClient;
-  const ai: Fixture["ai"] = { mode: opts.aiMode ?? "positive", calls: 0 };
+  const ai: Fixture["ai"] = { mode: opts.aiMode ?? "interested", calls: 0 };
   const autoPoll = { calls: 0 };
   const createRuntime = ((_provider: string) => ({
     executeStructured: async (req: { title: string }) => {
@@ -91,12 +91,18 @@ function setup(opts: { mode?: string; provider?: string; transportName?: string 
       if (ai.mode === "fail") return { ok: false as const, error: { code: "boom" } };
       if (req.title.startsWith("reply-analyze")) {
         if (ai.mode === "unsubscribe") {
-          return { ok: true as const, sessionId: "s", data: { intent: "unsubscribe", confidence: 0.95, summary: "Wants off the list.", suggested_action: "Suppress and stop.", requires_response: false } };
+          return { ok: true as const, sessionId: "s", data: { intent: "UNSUBSCRIBE", confidence: 0.95, summary: "Wants off the list.", suggested_action: "Suppress and stop.", requires_response: false } };
         }
-        if (ai.mode === "negative") {
-          return { ok: true as const, sessionId: "s", data: { intent: "negative", confidence: 0.8, summary: "Not interested.", suggested_action: "Back off.", requires_response: false } };
+        if (ai.mode === "objection") {
+          return { ok: true as const, sessionId: "s", data: { intent: "OBJECTION", confidence: 0.85, summary: "Too expensive for the budget.", suggested_action: "No draft; a human may follow up.", requires_response: false } };
         }
-        return { ok: true as const, sessionId: "s", data: { intent: "positive", confidence: 0.9, summary: "Interested, asks for pricing.", suggested_action: "Answer with pricing.", requires_response: true } };
+        if (ai.mode === "wrong_person") {
+          return { ok: true as const, sessionId: "s", data: { intent: "WRONG_PERSON", confidence: 0.9, summary: "Not the right contact.", suggested_action: "No draft.", requires_response: false } };
+        }
+        if (ai.mode === "not_interested") {
+          return { ok: true as const, sessionId: "s", data: { intent: "NOT_INTERESTED", confidence: 0.85, summary: "Not interested right now.", suggested_action: "Back off.", requires_response: false } };
+        }
+        return { ok: true as const, sessionId: "s", data: { intent: "INTERESTED", confidence: 0.9, summary: "Interested, asks for pricing.", suggested_action: "Answer with pricing.", requires_response: true } };
       }
       if (ai.mode === "draftfail") return { ok: false as const, error: { code: "boom" } };
       return { ok: true as const, sessionId: "s", data: { subject: "Re: pricing", body: "Thanks for asking, here are the details in plain words." } };
@@ -218,7 +224,7 @@ describe("reply polling", () => {
       expect(s1.analyzed).toBe(1);
       const rows = new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0);
       expect(rows).toHaveLength(1);
-      expect(rows[0].analysis_intent).toBe("positive");
+      expect(rows[0].analysis_intent).toBe("INTERESTED");
       expect(rows[0].process_state).toBe("ANALYZED");
       expect(rows[0].source).toBe("warmbly");
       expect(rows[0].requires_response).toBe(1);
@@ -285,7 +291,7 @@ describe("reply analysis", () => {
       await fx.replies.pollQueueReplies(fx.queueId);
       expect(new ContactSignals(fx.db).has(fx.queueId, "lead1@example.com", "unsubscribed")).toBe(true);
       const rows = new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0);
-      expect(rows[0].analysis_intent).toBe("unsubscribe");
+      expect(rows[0].analysis_intent).toBe("UNSUBSCRIBE");
       // Phase 10: an unsubscribe is a classified outcome, never an AI
       // failure; the reply is ANALYZED with requires_response=false.
       expect(rows[0].process_state).toBe("ANALYZED");
@@ -307,7 +313,7 @@ describe("response drafting policy", () => {
     return new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0)[0];
   }
 
-  it("drafts positive replies for review; approval marks ready and the explicit send answers once, threaded", async () => {
+  it("drafts INTERESTED replies for review; approval marks ready and the explicit send answers once, threaded", async () => {
     const fx = setup();
     try {
       const reply = await polledPositive(fx);
@@ -338,8 +344,8 @@ describe("response drafting policy", () => {
     }
   });
 
-  it("refuses negative replies without an explicit instruction, allows with one", async () => {
-    const fx = setup({ aiMode: "negative" });
+  it("refuses NOT_INTERESTED replies without an explicit instruction, allows with one", async () => {
+    const fx = setup({ aiMode: "not_interested" });
     try {
       const reply = await polledPositive(fx);
       await expect(fx.replies.draftResponse(reply.id)).rejects.toThrow(/explicit operator instruction/);
@@ -357,6 +363,32 @@ describe("response drafting policy", () => {
     try {
       const reply = await polledPositive(fx);
       await expect(fx.replies.draftResponse(reply.id, { instruction: "Try anyway." })).rejects.toThrow(/never receive/);
+      expect(new ResponseDrafts(fx.db).listByQueue(fx.queueId, 10, 0)).toHaveLength(0);
+    } finally {
+      fx.bulk.shutdown();
+      closeDb(fx.db);
+    }
+  });
+
+  it("never drafts OBJECTION or WRONG_PERSON replies, even with instruction", async () => {
+    const fx = setup({ aiMode: "objection" });
+    try {
+      const reply = await polledPositive(fx);
+      expect(reply.analysis_intent).toBe("OBJECTION");
+      await expect(fx.replies.draftResponse(reply.id, { instruction: "Handle the objection." })).rejects.toThrow(/never receive/);
+      expect(new ResponseDrafts(fx.db).listByQueue(fx.queueId, 10, 0)).toHaveLength(0);
+    } finally {
+      fx.bulk.shutdown();
+      closeDb(fx.db);
+    }
+  });
+
+  it("never drafts WRONG_PERSON replies, even with instruction", async () => {
+    const fx = setup({ aiMode: "wrong_person" });
+    try {
+      const reply = await polledPositive(fx);
+      expect(reply.analysis_intent).toBe("WRONG_PERSON");
+      await expect(fx.replies.draftResponse(reply.id)).rejects.toThrow(/never receive/);
       expect(new ResponseDrafts(fx.db).listByQueue(fx.queueId, 10, 0)).toHaveLength(0);
     } finally {
       fx.bulk.shutdown();
@@ -392,7 +424,7 @@ describe("response drafting policy", () => {
       const parked = new ResponseDrafts(fx.db).getByReply(reply.id);
       expect(parked?.status).toBe("GENERATION_RETRYABLE");
       // Retry with a working model updates the same row.
-      fx.ai.mode = "positive";
+      fx.ai.mode = "interested";
       const draft = await fx.replies.draftResponse(reply.id);
       expect(draft.status).toBe("NEEDS_REVIEW");
       expect(draft.id).toBe(parked?.id);
@@ -523,7 +555,7 @@ describe("prompt injection hardening (Phase 10)", () => {
           return {
             ok: true as const,
             sessionId: "s",
-            data: { intent: "positive", confidence: 0.9, summary: "Injection attempt classified as content.", suggested_action: "Ignore.", requires_response: true },
+            data: { intent: "INTERESTED", confidence: 0.9, summary: "Injection attempt classified as content.", suggested_action: "Ignore.", requires_response: true },
           };
         },
       });
@@ -534,7 +566,7 @@ describe("prompt injection hardening (Phase 10)", () => {
       await fx.replies.pollQueueReplies(fx.queueId);
       const rows = new InboundReplies(fx.db).listByQueue(fx.queueId, 10, 0);
       // The reply was classified, not obeyed: analysis completed normally.
-      expect(rows[0].analysis_intent).toBe("positive");
+      expect(rows[0].analysis_intent).toBe("INTERESTED");
       expect(seenPrompts.length).toBeGreaterThan(0);
       const prompt = seenPrompts.join("\n");
       // The injection text is quoted as data (unavoidable — it IS the mail)

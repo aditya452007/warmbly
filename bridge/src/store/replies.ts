@@ -1,12 +1,37 @@
 import type { BridgeDb } from "../db.js";
 
+// Phase 10 intent vocabulary (mirrors ReplyAnalysisSchema in domain/validate).
+// NEVER_DRAFT intents: no response may ever be generated (unsubscribe is
+// safety-critical; auto_reply/objection/wrong_person are not human-answerable
+// in a sales thread). INSTRUCTION_ONLY: drafting requires explicit operator
+// instruction. AUTO_DRAFT: eligible for automatic NEEDS_REVIEW drafts.
 export const REPLY_INTENT = {
-  POSITIVE: "positive",
-  NEGATIVE: "negative",
-  NEUTRAL: "neutral",
-  UNSUBSCRIBE: "unsubscribe",
-  AUTOMATED: "automated",
+  INTERESTED: "INTERESTED",
+  QUESTION: "QUESTION",
+  OBJECTION: "OBJECTION",
+  NOT_INTERESTED: "NOT_INTERESTED",
+  UNSUBSCRIBE: "UNSUBSCRIBE",
+  WRONG_PERSON: "WRONG_PERSON",
+  AUTO_REPLY: "AUTO_REPLY",
+  OTHER: "OTHER",
 } as const;
+
+export const NEVER_DRAFT_INTENTS: ReadonlySet<string> = new Set([
+  REPLY_INTENT.UNSUBSCRIBE,
+  REPLY_INTENT.OBJECTION,
+  REPLY_INTENT.WRONG_PERSON,
+  REPLY_INTENT.AUTO_REPLY,
+]);
+
+export const INSTRUCTION_ONLY_INTENTS: ReadonlySet<string> = new Set([
+  REPLY_INTENT.NOT_INTERESTED,
+  REPLY_INTENT.OTHER,
+]);
+
+export const AUTO_DRAFT_INTENTS: ReadonlySet<string> = new Set([
+  REPLY_INTENT.INTERESTED,
+  REPLY_INTENT.QUESTION,
+]);
 
 // Bridge-owned AI processing states for an inbound reply. Warmbly owns
 // mailbox/message state (read/unread, folders); these track only what the

@@ -23,15 +23,19 @@ import { cn } from "@/lib/utils";
 
 function intentTone(intent: string | null): string {
     switch (intent) {
-        case "positive":
+        case "INTERESTED":
             return "text-emerald-600";
-        case "negative":
-        case "unsubscribe":
-            return "text-red-600";
-        case "automated":
-            return "text-slate-400";
-        case "neutral":
+        case "QUESTION":
             return "text-amber-600";
+        case "OBJECTION":
+        case "NOT_INTERESTED":
+        case "UNSUBSCRIBE":
+            return "text-red-600";
+        case "WRONG_PERSON":
+        case "AUTO_REPLY":
+            return "text-slate-400";
+        case "OTHER":
+            return "text-slate-500";
         default:
             return "text-slate-400";
     }
@@ -192,7 +196,7 @@ export default function RepliesPanel({ runId }: { runId: string }) {
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        if (r.analysis_intent === "positive" || r.analysis_intent === "neutral") {
+                                                        if (r.analysis_intent === "INTERESTED" || r.analysis_intent === "QUESTION") {
                                                             runMutation(() => draft.mutateAsync({ id: r.id }), "Response drafted for review");
                                                         } else {
                                                             setInstructionFor(r.id);

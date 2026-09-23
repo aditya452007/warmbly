@@ -8,6 +8,7 @@ import {
   normalizeEmail,
   OutreachSchema,
   redactSecrets,
+  ReplyAnalysisSchema,
   ResearchSchema,
   RunRequestSchema,
 } from "./validate.js";
@@ -115,5 +116,51 @@ describe("escaping and redaction", () => {
     expect(s).not.toContain("wmbly_");
     expect(s).not.toContain("hunter2");
     expect(s).toContain("[REDACTED");
+  });
+});
+
+describe("reply analysis schema", () => {
+  it("accepts the full Phase 10 intent vocabulary", () => {
+    for (const intent of [
+      "INTERESTED",
+      "QUESTION",
+      "OBJECTION",
+      "NOT_INTERESTED",
+      "UNSUBSCRIBE",
+      "WRONG_PERSON",
+      "AUTO_REPLY",
+      "OTHER",
+    ]) {
+      const parsed = ReplyAnalysisSchema.safeParse({
+        intent,
+        confidence: 0.9,
+        summary: "Wants pricing.",
+        suggested_action: "Reply with pricing.",
+        requires_response: intent === "INTERESTED" || intent === "QUESTION",
+      });
+      expect(parsed.success).toBe(true);
+    }
+  });
+
+  it("rejects arbitrary intent strings (schema-validated, no free text)", () => {
+    const parsed = ReplyAnalysisSchema.safeParse({
+      intent: "MAYBE_KINDA_INTERESTED",
+      confidence: 0.9,
+      summary: "Unclear.",
+      suggested_action: "Follow up.",
+      requires_response: false,
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("defaults requires_response to false when the model omits it", () => {
+    const parsed = ReplyAnalysisSchema.safeParse({
+      intent: "QUESTION",
+      confidence: 0.8,
+      summary: "Asks about timeline.",
+      suggested_action: "Reply with availability.",
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.requires_response).toBe(false);
   });
 });
