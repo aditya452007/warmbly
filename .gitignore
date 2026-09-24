@@ -88,6 +88,12 @@ web/.tmp/
 tmp/
 build-errors.log
 
+# Local run logs from the dev launcher
+.run/
+
+# Codebuff / Freebuff agent state
+.freebuff/
+
 # AI assistant local state
 .claude/
 .claude.json
