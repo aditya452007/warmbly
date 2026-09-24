@@ -3,7 +3,7 @@
 # Stage 1: build the static dashboard once on the build platform. The output is
 # plain JS/CSS/HTML (arch-independent), so both target arches reuse it and the
 # heavy pnpm build runs only once.
-FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+FROM --platform=$BUILDPLATFORM node:24-alpine AS build
 WORKDIR /app
 # No TTY in a build: CI=true makes pnpm reinstall instead of prompting.
 ENV CI=true
@@ -47,7 +47,7 @@ RUN --mount=type=secret,id=sentry_auth_token,required=false \
 
 # Stage 2: serve the built SPA from nginx with a history fallback. The
 # entrypoint renders /config.js from container env at startup.
-FROM nginx:1.27-alpine
+FROM nginx:1.29-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY nginx-security-headers.conf /etc/nginx/warmbly-security-headers.conf
 RUN nginx -t

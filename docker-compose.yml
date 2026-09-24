@@ -243,14 +243,17 @@ services:
 
   postgres:
     restart: unless-stopped
-    image: postgres:16-alpine
+    # Postgres 18: the image's volume anchor moved from /var/lib/postgresql/data
+    # to /var/lib/postgresql (PGDATA is now version-specific). Mount the parent
+    # or the data directory is shadowed by the image's own anonymous volume.
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: warmbly
       POSTGRES_PASSWORD: warmbly
       POSTGRES_DB: warmbly_dev
     ports: ["15432:5432"]
     volumes:
-      - ${WARMBLY_PG_DATA:-postgres_data}:/var/lib/postgresql/data
+      - ${WARMBLY_PG_DATA:-postgres_data}:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U warmbly"]
       interval: 5s
@@ -259,7 +262,7 @@ services:
 
   redis:
     restart: unless-stopped
-    image: redis:7-alpine
+    image: redis:8.2-alpine
     ports: ["16379:6379"]
     volumes:
       - ${WARMBLY_REDIS_DATA:-redis_data}:/data
@@ -271,7 +274,7 @@ services:
 
   nats:
     restart: unless-stopped
-    image: nats:2.10-alpine
+    image: nats:2.11-alpine
     # -js: JetStream (durable streams). -m 8222: HTTP monitoring for healthcheck.
     command: ["-js", "-sd", "/data", "-m", "8222"]
     ports: ["4222:4222", "8222:8222"]
@@ -648,6 +651,66 @@ services:
     depends_on:
       backend: { condition: service_healthy }
 
+  # Local AI orchestration bridge (TypeScript, :8787): OpenCode-driven
+  # discovery → research → personalized drafts, synced into Warmbly. Outbound
+  # campaign mail goes through the Brevo SMTP relay from .env; replies flow
+  # through Warmbly's unibox. In the "bridge" profile so a lean self-host never
+  # pulls it; bring it up with COMPOSE_PROFILES=bridge in .env (the local
+  # one-click stack sets exactly that).
+  #
+  # Loopback only: the bridge has no authentication of its own and the browser
+  # calls it directly, so it must never be reachable beyond this machine.
+  bridge:
+    restart: unless-stopped
+    image: ${WARMBLY_IMAGE_PREFIX:-ghcr.io/warmbly/warmbly}/bridge:${WARMBLY_TAG:-prod}
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    ports:
+      - "${BRIDGE_BIND:-127.0.0.1}:8787:8787"
+    environment:
+      # Accept connections through the published port; host access stays
+      # loopback because of the bind address above.
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: "8787"
+      BRIDGE_DB_PATH: /data/bridge.sqlite
+      WARMBLY_API_BASE_URL: ${WARMBLY_API_BASE_URL:-http://backend:8080}
+      WARMBLY_API_KEY: ${WARMBLY_API_KEY:-wmbly_seed_acme_owner_full_access_0000000000}
+      AI_PROVIDER: ${AI_PROVIDER:-opencode}
+      # OpenCode usually runs on the host (127.0.0.1:4096); host-gateway gets
+      # the container to it. Override in .env to point anywhere else.
+      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://host.docker.internal:4096}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
+      OPENCODE_MODEL: ${OPENCODE_MODEL:-}
+      # Outbound transport. SEND_MODE=disabled (the default) fails closed; the
+      # local stack sets live + the Brevo credentials in .env.
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-brevo}
+      BREVO_SMTP_HOST: ${BREVO_SMTP_HOST:-smtp-relay.brevo.com}
+      BREVO_SMTP_PORT: ${BREVO_SMTP_PORT:-587}
+      BREVO_SMTP_USER: ${BREVO_SMTP_USER:-}
+      BREVO_SMTP_PASSWORD: ${BREVO_SMTP_PASSWORD:-}
+      BREVO_FROM_EMAIL: ${BREVO_FROM_EMAIL:-}
+      BREVO_FROM_NAME: ${BREVO_FROM_NAME:-}
+      SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
+      SEND_MODE: ${SEND_MODE:-disabled}
+      REPLY_WORKER_ENABLED: ${REPLY_WORKER_ENABLED:-false}
+      REPLY_WORKER_INTERVAL_MS: ${REPLY_WORKER_INTERVAL_MS:-60000}
+      REPLY_WORKER_LEASE_MS: ${REPLY_WORKER_LEASE_MS:-300000}
+    volumes:
+      - ${WARMBLY_BRIDGE_DATA:-bridge_data}:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    profiles: ["bridge"]
+
   admin:
     restart: unless-stopped
     image: ${WARMBLY_IMAGE_PREFIX:-ghcr.io/warmbly/warmbly}/admin:${WARMBLY_TAG:-prod}
@@ -742,3 +805,4 @@ volumes:
   blobs:
   worker_state:
   updater_state:
+  bridge_data:

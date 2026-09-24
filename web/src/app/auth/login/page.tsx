@@ -20,6 +20,7 @@ import { useTwoFactorVerify } from "@/lib/api/hooks/auth/useTwoFactor";
 import useRegister from "@/lib/api/hooks/auth/useRegister";
 import useRegisterConfirm from "@/lib/api/hooks/auth/useRegisterConfirm";
 import { saveTokens } from "@/lib/auth";
+import { runtimeEnv } from "@/lib/runtimeConfig";
 import getUser from "@/lib/api/client/auth/getUser";
 import { TURNSTILE_KEY, API_URL } from "@/lib/information";
 import useBrand from "@/hooks/useBrand";
@@ -43,6 +44,19 @@ import {
     SUGGEST_PASSKEY_FLAG,
     type PasskeyLoginChallenge,
 } from "@/lib/passkey";
+
+/* ── Local single-operator sign-in ─────────────────────── */
+
+// A local, single-operator instance pre-provisions its owner server-side (see
+// WARMBLY_BOOTSTRAP_* in the deployment env) and builds the dashboard with the
+// same credentials (VITE_LOCAL_OWNER_* at build time, or WARMBLY_LOCAL_OWNER_*
+// injected through /config.js in a container). Both empty in the published
+// release, so a normal install never sees any of this. Any failure — revoked
+// password, backend still booting — silently falls through to the normal
+// interactive flow below; ?next and ?invite behave exactly as before.
+const LOCAL_OWNER_EMAIL = runtimeEnv("LOCAL_OWNER_EMAIL", import.meta.env.VITE_LOCAL_OWNER_EMAIL);
+const LOCAL_OWNER_PASSWORD = runtimeEnv("LOCAL_OWNER_PASSWORD", import.meta.env.VITE_LOCAL_OWNER_PASSWORD);
+const localOwnerConfigured = !!(LOCAL_OWNER_EMAIL && LOCAL_OWNER_PASSWORD);
 
 /* ── Schemas ─────────────────────── */
 
@@ -522,6 +536,36 @@ export default function LoginPage() {
     const handleSSO = useCallback(() => handleProvider("oidc"), [handleProvider]);
 
     /* ── Step 1: Email ─────────────────────── */
+    /* ── Local single-operator auto sign-in ───────────────────────── */
+
+    // Landing on this page with the owner credentials baked in signs straight
+    // in: a single local operator should not retype a password they are the
+    // only holder of. Runs once per mount; an invited signup (?invite=) keeps
+    // the normal path, because that screen is about somebody else.
+    useEffect(() => {
+        if (!localOwnerConfigured || inviteToken || ssoTwoFA) return;
+        withCaptcha(async (token) => {
+            try {
+                const res = await loginMutation.mutateAsync({
+                    email: LOCAL_OWNER_EMAIL as string,
+                    password: LOCAL_OWNER_PASSWORD as string,
+                    turnstile: token,
+                });
+                if (!res.code_required) {
+                    await finishDirectLogin(res);
+                }
+                // code_required cannot happen with AUTH_LOGIN_CODE=off; if a
+                // deployment ever re-enables it, the user lands on the normal
+                // interactive flow rather than a dead end.
+            } catch {
+                // Wrong or revoked credentials, or the backend was still
+                // coming up: the standard forms below are the fallback, and
+                // an error toast here would just be noise.
+            }
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const handleEmailContinue = (data: z.infer<typeof emailSchema>) => {
         setEmail(data.email);
         goTo(mode === "signin" ? "signin" : "signup");
@@ -1101,6 +1145,9 @@ function SignInStep({
 }) {
     const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof signInSchema>>({
         resolver: zodResolver(signInSchema),
+        // A local single-operator build pre-fills the password: sign-in is one
+        // click. Empty everywhere else.
+        defaultValues: { password: LOCAL_OWNER_PASSWORD ?? "" },
     });
 
     return (
@@ -1108,7 +1155,11 @@ function SignInStep({
             <div className="text-center mb-6">
                 <EmailPill email={email} onEdit={onBack} />
                 <h1 className="text-[28px] font-bold text-slate-900 tracking-tight leading-tight">Welcome back</h1>
-                <p className="text-sm text-slate-400 mt-1.5">Enter your password to continue</p>
+                <p className="text-sm text-slate-400 mt-1.5">
+                    {localOwnerConfigured
+                        ? "Password prefilled from your local configuration — press Sign in."
+                        : "Enter your password to continue"}
+                </p>
             </div>
 
             <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
@@ -1121,7 +1172,7 @@ function SignInStep({
                     </div>
                     <input
                         type="password"
-                        placeholder="Enter your password"
+                        placeholder={localOwnerConfigured ? "Prefilled — press Sign in" : "Enter your password"}
                         className={INPUT}
                         autoComplete="current-password"
                         autoFocus
@@ -1132,6 +1183,11 @@ function SignInStep({
 
                 <div className="pt-1">
                     <AuthButton loading={pending}>Sign in</AuthButton>
+                    {localOwnerConfigured && (
+                        <p className="text-[11px] text-slate-400 mt-2 text-center">
+                            Local instance — {LOCAL_OWNER_EMAIL} is signed in automatically.
+                        </p>
+                    )}
                 </div>
             </form>
 

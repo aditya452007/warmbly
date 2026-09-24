@@ -36,6 +36,14 @@ func (s *emailService) WireEmailHistoryID(repo repository.EmailHistoryIDReposito
 // within this window rather than within one tick.
 const reconcileRepublishInterval = 5 * time.Minute
 
+// reconcileFailureBackoff multiplies on every consecutive failed publish of the
+// same account, up to reconcileRepublishInterval. Without it a permanently
+// broken account (a revoked OAuth grant, a corrupted credential) is retried
+// every tick forever, which is how one dead mailbox could flood the log at a
+// line a second. The first attempt still fires immediately: a healthy account
+// that simply raced a worker restart is re-shipped within seconds.
+const reconcileFailureBackoff = 15 * time.Second
+
 // StartWorkerReconciler periodically ensures every active mailbox is assigned to
 // a worker and loaded onto it. Workers hold accounts in memory only, so this is
 // what makes onboarding, worker restarts, and reassignment converge. Each
@@ -43,7 +51,9 @@ const reconcileRepublishInterval = 5 * time.Minute
 // PublishAddEmail is idempotent worker-side, so a republish is always safe.
 func (s *emailService) StartWorkerReconciler(ctx context.Context, interval time.Duration) {
 	lastPublished := map[uuid.UUID]time.Time{}
-	s.reconcileWorkerAccounts(ctx, lastPublished)
+	lastFailure := map[uuid.UUID]time.Time{}
+	failureStreak := map[uuid.UUID]int{}
+	s.reconcileWorkerAccounts(ctx, lastPublished, lastFailure, failureStreak)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -52,12 +62,12 @@ func (s *emailService) StartWorkerReconciler(ctx context.Context, interval time.
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.reconcileWorkerAccounts(ctx, lastPublished)
+			s.reconcileWorkerAccounts(ctx, lastPublished, lastFailure, failureStreak)
 		}
 	}
 }
 
-func (s *emailService) reconcileWorkerAccounts(ctx context.Context, lastPublished map[uuid.UUID]time.Time) {
+func (s *emailService) reconcileWorkerAccounts(ctx context.Context, lastPublished, lastFailure map[uuid.UUID]time.Time, failureStreak map[uuid.UUID]int) {
 	ids, err := s.emailRepository.ListActiveWorkerAccounts(ctx)
 	if err != nil {
 		log.Warn().Err(err).Msg("worker reconciler: list active accounts failed")
@@ -68,21 +78,43 @@ func (s *emailService) reconcileWorkerAccounts(ctx context.Context, lastPublishe
 	now := time.Now()
 	for _, id := range ids {
 		active[id] = struct{}{}
+		// Exponential backoff for accounts that keep failing to load: a broken
+		// credential must not log-spam every tick. Interval caps the wait, so
+		// every account still gets at least one fresh attempt per window.
+		if streak := failureStreak[id]; streak > 0 {
+			backoff := reconcileFailureBackoff << (streak - 1)
+			if backoff > reconcileRepublishInterval || backoff <= 0 {
+				backoff = reconcileRepublishInterval
+			}
+			if last, ok := lastFailure[id]; ok && now.Sub(last) < backoff {
+				continue
+			}
+		}
 		if last, ok := lastPublished[id]; ok && now.Sub(last) < reconcileRepublishInterval {
 			continue
 		}
 		if err := s.LoadAccountOntoWorker(ctx, id); err != nil {
 			log.Warn().Err(err).Str("email_id", id.String()).Msg("worker reconciler: load account failed")
+			lastFailure[id] = now
+			failureStreak[id]++
 			continue
 		}
 		lastPublished[id] = now
+		delete(lastFailure, id)
+		delete(failureStreak, id)
 	}
 
-	// Drop throttle entries for accounts no longer active so the map can't grow
-	// without bound as mailboxes are disconnected.
+	// Drop throttle entries for accounts no longer active so the maps can't
+	// grow without bound as mailboxes are disconnected.
 	for id := range lastPublished {
 		if _, ok := active[id]; !ok {
 			delete(lastPublished, id)
+		}
+	}
+	for id := range lastFailure {
+		if _, ok := active[id]; !ok {
+			delete(lastFailure, id)
+			delete(failureStreak, id)
 		}
 	}
 }

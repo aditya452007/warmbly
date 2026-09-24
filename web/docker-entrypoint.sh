@@ -24,6 +24,10 @@ window.__WARMBLY_ENV__ = {
   APP_URL: "$(js "${WARMBLY_APP_URL:-}")",
   TURNSTILE_KEY: "$(js "${WARMBLY_TURNSTILE_KEY:-}")",
   BETA_NOTICE: "$(js "${WARMBLY_BETA_NOTICE:-}")",
+  # Local single-operator auto sign-in. Empty in the published release; set
+  # WARMBLY_LOCAL_OWNER_EMAIL / _PASSWORD to enable.
+  LOCAL_OWNER_EMAIL: "$(js "${WARMBLY_LOCAL_OWNER_EMAIL:-}")",
+  LOCAL_OWNER_PASSWORD: "$(js "${WARMBLY_LOCAL_OWNER_PASSWORD:-}")",
   SENTRY_DSN: "$(js "${WARMBLY_SENTRY_DSN:-}")",
   SENTRY_ENVIRONMENT: "$(js "${WARMBLY_SENTRY_ENVIRONMENT:-}")",
   POSTHOG_KEY: "$(js "${WARMBLY_POSTHOG_KEY:-}")",
