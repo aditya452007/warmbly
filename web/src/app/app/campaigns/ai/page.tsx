@@ -1,11 +1,12 @@
 // AI Campaign — Phase 2 page.
 //
-// Collects the configuration a future AI backend will consume (target
-// business type, location, offer URLs, custom instructions, daily sending
-// limit) and creates a REAL Warmbly campaign in draft via the existing
-// campaign API. It never starts the campaign and never enrols contacts.
-// Fields the campaign API has no home for (offer URLs, instructions) stay
-// frontend-only; name, description and daily limit are persisted.
+// Collects the AI run configuration (target business type, location, offer
+// URLs, custom instructions, daily sending limit) and creates a REAL Warmbly
+// campaign in draft via the existing campaign API, then immediately starts
+// the local AI bridge run against it: discovery, research and personalized
+// drafts, with synced contacts joining the campaign as leads. It never starts
+// the campaign itself — sending begins from the campaign page autopilot or
+// a manual launch once drafts are ready.
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -15,6 +16,7 @@ import { Label, NumberInput, TextInput } from "@/components/ui/field";
 import { Page, PageBody, PageTopbar, TopbarAction } from "@/components/layout/Page";
 import { cn } from "@/lib/utils";
 import useCreateCampaign from "@/lib/api/hooks/app/campaigns/useCreateCampaign";
+import { startBridgeRun } from "@/lib/api/bridge";
 import type { AppError } from "@/lib/api/client/normalizeError";
 import buildError from "@/lib/helper/buildError";
 
@@ -82,8 +84,8 @@ export default function AICampaignPage() {
 
     // The campaign API only takes name, description and sending fields, so
     // the AI inputs travel as a generated name plus a human-readable
-    // description. Offer URLs and instructions have no API home yet and stay
-    // frontend-only until the OpenCode bridge owns them.
+    // description. Offer URLs and instructions ride along to the bridge run,
+    // which owns personalization.
     function buildPayload() {
         const type = businessType.trim();
         const loc = location.trim();
@@ -93,7 +95,15 @@ export default function AICampaignPage() {
         if (urls.length > 0) parts.push(`Offers: ${urls.join(", ")}.`);
         if (instructions.trim()) parts.push(`Instructions: ${instructions.trim()}`);
         const description = parts.join(" ").slice(0, CAMPAIGN_DESCRIPTION_MAX);
-        return { name, description, daily_limit: dailyLimit };
+        return {
+            campaign: { name, description, daily_limit: dailyLimit },
+            run: {
+                businessType: type,
+                location: loc,
+                customInstructions: instructions.trim(),
+                offerUrls: urls,
+            },
+        };
     }
 
     async function onSubmit(e: React.FormEvent) {
@@ -102,14 +112,27 @@ export default function AICampaignPage() {
         const next = validate();
         setErrors(next);
         if (Object.keys(next).length > 0) return;
-        // Create only: no steps, no contacts, no start. The campaign lands as
-        // a draft and the user continues in the normal campaign UI.
+        // Create the campaign, then immediately start the AI run against it.
+        // A bridge failure does not lose the campaign: it lands as a normal
+        // draft and the error says what to do.
+        let created: { id: string } | undefined;
         try {
-            const created = await create.mutateAsync(buildPayload());
-            toast.success("Campaign created. Add contacts, then launch it.");
-            if (created?.id) navigate(`/app/campaigns/${created.id}`);
+            const { campaign, run } = buildPayload();
+            created = await create.mutateAsync(campaign);
+            if (!created?.id) throw new Error("campaign id missing");
+            await startBridgeRun(created.id, run);
+            toast.success("Campaign created. AI is finding leads and drafting emails.");
+            navigate(`/app/campaigns/${created.id}`);
         } catch (err) {
-            toast.error(buildError(err as AppError));
+            if (created?.id) {
+                toast.error(
+                    `Campaign saved as a draft, but the AI run could not start: ${buildError(err as AppError)}`,
+                    { duration: 8000 },
+                );
+                navigate(`/app/campaigns/${created.id}`);
+            } else {
+                toast.error(buildError(err as AppError));
+            }
         }
     }
 

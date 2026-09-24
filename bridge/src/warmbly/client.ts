@@ -39,6 +39,10 @@ export interface AddContact {
   phone?: string;
   custom_fields?: Record<string, string>;
   subscribed?: boolean;
+  // Campaign ids the contact joins as a lead on create. Without this the
+  // synced contact exists in the workspace but never enters the campaign,
+  // and an empty campaign cannot start.
+  campaigns?: string[];
 }
 
 function sleep(ms: number): Promise<void> {

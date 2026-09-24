@@ -361,7 +361,8 @@ export class BridgeOrchestrator {
         this.events.append({ kind: "lead.discovered", campaignRunId: runId, agentId, leadId, message: item.business_name });
         // Checkpoint immediately: persist first, then attempt Warmbly sync for
         // leads that already carry an email. A crash after this point loses
-        // nothing already returned.
+        // nothing already returned. The campaign id joins the contact as a
+        // campaign lead at create, so the campaign has leads to send to.
         if (email) {
           buffer.add(leadId, {
             first_name: "",
@@ -369,6 +370,7 @@ export class BridgeOrchestrator {
             email,
             company: item.business_name.trim(),
             ...(item.phone?.trim() ? { phone: item.phone.trim() } : {}),
+            campaigns: [run.warmblyCampaignId],
             custom_fields: {
               website: item.website ?? "",
               location: run.location,

@@ -56,6 +56,32 @@ async function bridgeFetch<T>(path: string, init?: RequestInit): Promise<T> {
     return data as T;
 }
 
+export interface BridgeRunRequest {
+    businessType: string;
+    location: string;
+    customInstructions?: string;
+    offerUrls?: string[];
+    parallelAgents?: number;
+    targetLeads?: number;
+}
+
+// Kick off the AI pipeline for a campaign: discovery, research, personalized
+// drafts synced into Warmbly, and the AI Outreach step shell. Returns
+// immediately; progress arrives via listBridgeRuns / getBridgeStatus.
+export function startBridgeRun(warmblyCampaignId: string, input: BridgeRunRequest): Promise<{ runId: string }> {
+    return bridgeFetch(`/api/campaigns/${warmblyCampaignId}/run`, {
+        method: "POST",
+        body: JSON.stringify({
+            business_type: input.businessType,
+            location: input.location,
+            custom_instructions: input.customInstructions ?? "",
+            offer_urls: input.offerUrls ?? [],
+            ...(input.parallelAgents !== undefined ? { parallel_agents: input.parallelAgents } : {}),
+            ...(input.targetLeads !== undefined ? { target_leads: input.targetLeads } : {}),
+        }),
+    });
+}
+
 export function listBridgeRuns(warmblyCampaignId: string): Promise<{ runs: BridgeRun[] }> {
     return bridgeFetch(`/api/warmbly/${warmblyCampaignId}/runs`);
 }

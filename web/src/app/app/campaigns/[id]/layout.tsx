@@ -23,6 +23,7 @@ import { useConfirm } from "@/hooks/context/confirm";
 import LaunchCampaignDialog from "@/components/app/campaigns/LaunchCampaignDialog";
 import CampaignActionsMenu from "@/components/app/campaigns/CampaignActionsMenu";
 import UndeliverableBanner from "@/components/app/campaigns/UndeliverableBanner";
+import AiRunAutopilot from "@/components/app/campaigns/AiRunAutopilot";
 import { canStartCampaign } from "@/components/app/campaigns/useCampaignActions";
 import toast from "react-hot-toast";
 import { CAMPAIGN_DELETED_EVENT, type CampaignDeletedDetail } from "@/lib/realtime/campaignDeleted";
@@ -190,6 +191,8 @@ export default function CampaignLayout() {
                 </div>
 
                 <UndeliverableBanner campaignId={campaign.id} status={status} />
+
+                <AiRunAutopilot campaignId={campaign.id} campaignStatus={status} />
 
                 <div className="shrink-0 px-3 flex items-center gap-1 border-b border-slate-200 overflow-x-auto no-scrollbar">
                     {TABS.map(({ label, path, Icon }) => {

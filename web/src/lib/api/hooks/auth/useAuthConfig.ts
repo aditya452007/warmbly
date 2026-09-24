@@ -48,9 +48,23 @@ export default function useAuthConfig() {
         retry: 1,
     });
 
+    // The fallback must cover an incomplete answer, not just an absent one:
+    // a backend binary that predates a field (or a proxy serving a stub)
+    // resolves successfully, and a nullish check alone let that truthy partial
+    // response sail past the fallback and crash the login screen on the first
+    // missing field. Merging over the fallback keeps every consumer reading a
+    // fully populated config regardless of what actually arrived.
+    const config: AuthConfig = query.data && typeof query.data === "object"
+        ? {
+            ...AUTH_CONFIG_FALLBACK,
+            ...query.data,
+            providers: Array.isArray(query.data.providers) ? query.data.providers : AUTH_CONFIG_FALLBACK.providers,
+        }
+        : AUTH_CONFIG_FALLBACK;
+
     return {
         ...query,
-        config: query.data ?? AUTH_CONFIG_FALLBACK,
+        config,
         // Callers must not render the captcha widget or provider buttons until
         // the real answer arrives, or the widget mounts and then unmounts.
         ready: !query.isLoading,

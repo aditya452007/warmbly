@@ -33,6 +33,7 @@ export function mapLeadToContact(
   research: MappableResearch,
   location: string,
   agentId: string,
+  campaignId?: string,
 ): AddContact {
   return {
     first_name: "",
@@ -45,6 +46,10 @@ export function mapLeadToContact(
     // The sending phase must decide consent handling before mailing them.
     subscribed: false,
     ...(lead.phone ? { phone: lead.phone } : {}),
+    // Joining the campaign at create time makes the synced contact a lead,
+    // so the campaign has something to send once started. The campaign
+    // engine owns all pacing and mailbox caps from here.
+    ...(campaignId ? { campaigns: [campaignId] } : {}),
     custom_fields: {
       website: lead.website ?? "",
       location,

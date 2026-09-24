@@ -18,8 +18,10 @@ func releaseClaim() {
 }
 
 func TestClaimStateID_MintsAndPersists(t *testing.T) {
-	t.Cleanup(releaseClaim)
 	dir := t.TempDir()
+	// Registered after t.TempDir, so cleanup runs LIFO: the lock is released
+	// before Windows removes the directory, which cannot delete a locked file.
+	t.Cleanup(releaseClaim)
 
 	first, ok := claimStateID(dir)
 	if !ok {
@@ -37,8 +39,8 @@ func TestClaimStateID_MintsAndPersists(t *testing.T) {
 }
 
 func TestClaimStateID_LockedFileFallsToNext(t *testing.T) {
-	t.Cleanup(releaseClaim)
 	dir := t.TempDir()
+	t.Cleanup(releaseClaim)
 
 	first, ok := claimStateID(dir)
 	if !ok {
@@ -60,8 +62,8 @@ func TestClaimStateID_LockedFileFallsToNext(t *testing.T) {
 }
 
 func TestClaimStateID_SkipsCorruptFile(t *testing.T) {
-	t.Cleanup(releaseClaim)
 	dir := t.TempDir()
+	t.Cleanup(releaseClaim)
 	if err := os.WriteFile(filepath.Join(dir, "aaa.id"), []byte("not-a-uuid\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -76,12 +78,12 @@ func TestClaimStateID_SkipsCorruptFile(t *testing.T) {
 }
 
 func TestResolveWorkerID_FromStateDir(t *testing.T) {
+	dir := t.TempDir()
 	t.Cleanup(releaseClaim)
 	// t.Setenv (not Unsetenv) so the prior values are restored afterwards;
 	// resolveWorkerID treats empty exactly like unset.
 	t.Setenv("WORKER_ID", "")
 	t.Setenv("WORKER_BIND_IP", "")
-	dir := t.TempDir()
 	t.Setenv("WORKER_STATE_DIR", dir)
 
 	want := uuid.MustParse("99999999-8888-7777-6666-555555555555")

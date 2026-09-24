@@ -2,12 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/google/uuid"
 )
@@ -62,7 +62,7 @@ func claimStateID(dir string) (uuid.UUID, bool) {
 		log.Printf("cannot persist worker id to %q (%v), falling back", path, err)
 		return uuid.Nil, false
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockExclusive(f); err != nil {
 		f.Close()
 		return uuid.Nil, false
 	}
@@ -89,11 +89,19 @@ func tryClaimIDFile(path string) (uuid.UUID, bool) {
 	if err != nil {
 		return uuid.Nil, false
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockExclusive(f); err != nil {
 		f.Close()
 		return uuid.Nil, false
 	}
-	raw, err := os.ReadFile(path)
+	// Read through the locking handle itself. A second handle (os.ReadFile)
+	// would be blocked by our own exclusive lock on Windows, where byte-range
+	// locks are enforced per handle; flock does not have that behavior, so the
+	// Unix build never noticed.
+	if _, err := f.Seek(0, 0); err != nil {
+		f.Close()
+		return uuid.Nil, false
+	}
+	raw, err := io.ReadAll(f)
 	if err != nil {
 		f.Close()
 		return uuid.Nil, false

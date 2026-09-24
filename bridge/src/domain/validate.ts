@@ -15,7 +15,7 @@ export const RunRequestSchema = z.object({
   customInstructions: z.string().default(""),
   offerUrls: z.array(httpUrl).min(1).max(3),
   parallelAgents: z.number().int().min(1).max(16).default(4),
-  targetLeads: z.number().int().positive(),
+  targetLeads: z.number().int().positive().default(50),
 });
 
 const LeadWireSchema = z

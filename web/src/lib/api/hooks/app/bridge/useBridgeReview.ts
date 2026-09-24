@@ -43,12 +43,13 @@ export function useBridgeRuns(warmblyCampaignId: string | null) {
     });
 }
 
-export function useBridgeStatus(runId: string | null) {
+export function useBridgeStatus(runId: string | null, refetchInterval?: number | false) {
     return useQuery({
         queryKey: [KEY, "status", runId],
         queryFn: () => getBridgeStatus(runId as string),
         enabled: !!runId,
         staleTime: 10_000,
+        refetchInterval,
         retry: 1,
     });
 }
