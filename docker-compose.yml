@@ -638,6 +638,9 @@ services:
       # captcha is off server-side. Set WARMBLY_TURNSTILE_KEY to your site key
       # when you set CAPTCHA_PROVIDER=turnstile.
       WARMBLY_TURNSTILE_KEY: ${WARMBLY_TURNSTILE_KEY:-1x00000000000000000000AA}
+      # The browser calls the AI bridge directly (loopback-published above).
+      # Public host deployments derive the same way as APP_URL.
+      WARMBLY_BRIDGE_URL: ${BRIDGE_PUBLIC_URL:-http://127.0.0.1:8787}
       # Cookieless product analytics and browser error tracking, one key for
       # both. Unset (the default, and what every self-host has) means the SDK
       # chunk is never fetched and no PostHog host is contacted.
@@ -654,9 +657,7 @@ services:
   # Local AI orchestration bridge (TypeScript, :8787): OpenCode-driven
   # discovery → research → personalized drafts, synced into Warmbly. Outbound
   # campaign mail goes through the Brevo SMTP relay from .env; replies flow
-  # through Warmbly's unibox. In the "bridge" profile so a lean self-host never
-  # pulls it; bring it up with COMPOSE_PROFILES=bridge in .env (the local
-  # one-click stack sets exactly that).
+  # through Warmbly's unibox.
   #
   # Loopback only: the bridge has no authentication of its own and the browser
   # calls it directly, so it must never be reachable beyond this machine.
@@ -674,13 +675,16 @@ services:
       BRIDGE_HOST: 0.0.0.0
       BRIDGE_PORT: "8787"
       BRIDGE_DB_PATH: /data/bridge.sqlite
+      # Browser origins allowed to call the bridge. Defaults to the local
+      # dashboards; PUBLIC_HOST adds the LAN-facing one when set.
+      BRIDGE_CORS_ORIGINS: ${BRIDGE_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174}${PUBLIC_HOST:+,http://${PUBLIC_HOST}:5173}
       WARMBLY_API_BASE_URL: ${WARMBLY_API_BASE_URL:-http://backend:8080}
       WARMBLY_API_KEY: ${WARMBLY_API_KEY:-wmbly_seed_acme_owner_full_access_0000000000}
       AI_PROVIDER: ${AI_PROVIDER:-opencode}
-      # OpenCode usually runs on the host (127.0.0.1:4096); host-gateway gets
-      # the container to it. Override in .env to point anywhere else.
-      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://host.docker.internal:4096}
-      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-}
+      # OpenCode runs as its own service on the compose network. Override in
+      # .env to point at a host-installed server instead.
+      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
       OPENCODE_MODEL: ${OPENCODE_MODEL:-}
       # Outbound transport. SEND_MODE=disabled (the default) fails closed; the
@@ -703,12 +707,43 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       backend: { condition: service_healthy }
+      opencode: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 10s
+    profiles: ["bridge"]
+
+  # Headless OpenCode server (`opencode serve`, the model agent runtime the
+  # bridge drives over HTTP). Containerized so the stack is self-contained: no
+  # host install, no host.docker.internal hop. Basic auth from .env; its AI
+  # provider credentials live in the same env block.
+  opencode:
+    restart: unless-stopped
+    # There is no official OpenCode image (the historical ghcr.io/sst registry
+    # path is denied), so the default is our own build from
+    # deploy/docker/opencode.Dockerfile. Override with WARMBLY_OPENCODE_IMAGE.
+    image: ${WARMBLY_OPENCODE_IMAGE:-ghcr.io/warmbly/warmbly/opencode:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/opencode.Dockerfile
+    command: ["serve", "--hostname", "0.0.0.0", "--port", "4096"]
+    environment:
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
+    volumes:
+      - ${WARMBLY_OPENCODE_DATA:-opencode_data}:/home/opencode/.local/share/opencode
+    healthcheck:
+      # Builds its own basic-auth header from the service env (the endpoint
+      # answers 400 to an unauthenticated probe, so an anonymous spider would
+      # always fail). curl ships in the opencode image.
+      test: ["CMD-SHELL", "curl -fsS -u \"$${OPENCODE_SERVER_USERNAME:-opencode}:$$OPENCODE_SERVER_PASSWORD\" http://127.0.0.1:4096/global/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     profiles: ["bridge"]
 
   admin:
@@ -806,3 +841,4 @@ volumes:
   worker_state:
   updater_state:
   bridge_data:
+  opencode_data:

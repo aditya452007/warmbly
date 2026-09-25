@@ -1,0 +1,6 @@
+#!/command/execlineb -P
+# NATS with JetStream; stream data under /data/nats, monitoring on 8222
+# (in-container only).
+fdmove -c 2 1
+s6-envdir /run/s6/container_environment
+/usr/bin/nats-server -js -sd /data/nats -m 8222 -a 127.0.0.1

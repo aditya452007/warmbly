@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
-import Turnstile, { type BoundTurnstileObject } from "react-turnstile";
+import Turnstile, { type BoundTurnstileObject } from "@/lib/turnstile";
 import { TURNSTILE_KEY } from "@/lib/information";
 
 interface Props {

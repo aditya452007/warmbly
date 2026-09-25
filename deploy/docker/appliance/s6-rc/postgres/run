@@ -1,0 +1,8 @@
+#!/command/with-contenv bash
+# Postgres 18, data in /data/postgres (prepared by the init oneshot, which
+# also created the warmbly_dev database). Foreground daemon as the warmbly
+# user; s6 supervises and restarts it. Logs to stdout.
+exec su-exec warmbly /usr/bin/postgres \
+    -D /data/postgres \
+    -c listen_addresses=127.0.0.1 \
+    -c unix_socket_directories=/run/postgresql

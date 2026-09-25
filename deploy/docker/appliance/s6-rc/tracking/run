@@ -1,0 +1,10 @@
+#!/command/with-contenv bash
+# Open/click tracking (Rust), port 3000, in-container only (nginx proxies /t/).
+# Bash rather than execline: the env-prefix assignment syntax below is shell,
+# not execline (execline would try to exec a binary named "APP_ENV=dev").
+set -e
+export APP_ENV=dev AWS_CONFIG_ENABLED=false
+export TRACKING_HOST=127.0.0.1 TRACKING_PORT=3000
+export EVENTBUS_PROVIDER=nats
+export BACKEND_INTERNAL_URL=http://127.0.0.1:8080
+exec /app/tracking

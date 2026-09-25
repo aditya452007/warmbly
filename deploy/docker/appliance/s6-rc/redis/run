@@ -1,0 +1,5 @@
+#!/command/execlineb -P
+# Redis, persistence under /data/redis, appendonly for durability.
+fdmove -c 2 1
+s6-envdir /run/s6/container_environment
+/usr/bin/redis-server --dir /data/redis --appendonly yes --save "" --bind 127.0.0.1 --port 6379

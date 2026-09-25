@@ -1,0 +1,5 @@
+# Shell scripts that get COPYd into images and executed there must keep
+# LF endings: a CRLF shebang makes exec fail with a bare "not found" that
+# looks like a missing file (nginx entrypoint hooks, s6 run scripts).
+*.sh text eol=lf
+**/s6-rc/**/run text eol=lf

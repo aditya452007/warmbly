@@ -1,0 +1,15 @@
+#!/command/with-contenv bash
+# AI orchestration bridge. Waits for the OpenCode server it drives, then execs
+# node on the built output. Its env (Brevo creds included) is loaded by the
+# boot oneshot via with-contenv.
+set -e
+cd /app/bridge
+for i in $(seq 1 30); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' \
+        -u "opencode:${OPENCODE_SERVER_PASSWORD:-}" \
+        http://127.0.0.1:4096/global/health || true)
+    [ "$code" = "200" ] && break
+    if [ "$i" = 30 ]; then echo "[bridge] opencode never became healthy; starting anyway" >&2; fi
+    sleep 2
+done
+exec node dist/index.js

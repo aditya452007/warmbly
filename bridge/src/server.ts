@@ -20,9 +20,16 @@ export interface BridgeServerDeps {
 
 export function createBridgeApp(orchestrator: BridgeOrchestrator, deps?: BridgeServerDeps): Hono {
   const app = new Hono();
+  // Allowed browser origins. Defaults keep a native (non-container) bridge
+  // working with zero configuration; BRIDGE_CORS_ORIGINS overrides in compose,
+  // where the dashboard may be served from other hostnames.
+  const origins = (process.env.BRIDGE_CORS_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
   app.use(
     cors({
-      origin: ["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173"],
+      origin: origins.length > 0 ? origins : ["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173"],
       allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
     }),
   );

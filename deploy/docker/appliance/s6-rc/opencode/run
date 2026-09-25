@@ -1,0 +1,8 @@
+#!/command/execlineb -P
+# Headless OpenCode server on the loopback interface; the bridge and the
+# nginx /bridge/ path are the only clients. Auth comes from
+# OPENCODE_SERVER_PASSWORD (loaded by the boot oneshot).
+fdmove -c 2 1
+s6-envuidgid opencode
+s6-envdir /run/s6/container_environment
+/usr/local/bin/opencode serve --hostname 127.0.0.1 --port 4096

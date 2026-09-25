@@ -1,0 +1,11 @@
+#!/command/with-contenv bash
+# Event consumer: NATS JetStream → Postgres. Waits for postgres like the
+# backend does — s6-rc starts the user bundle as soon as the init oneshot
+# finishes, so the daemons race postgres's own listen loop.
+set -e
+for i in $(seq 1 60); do
+    if pg_isready -h 127.0.0.1 -U warmbly -d warmbly_dev >/dev/null 2>&1; then break; fi
+    if [ "$i" = 60 ]; then echo "[consumer] postgres never became ready" >&2; exit 1; fi
+    sleep 1
+done
+exec /app/consumer

@@ -9,7 +9,7 @@ import toast from "react-hot-toast";
 import { ArrowLeft, Pencil, LockIcon, Loader2Icon } from "lucide-react";
 import { usePasswordStrength } from "@/hooks/usePasswordStrength";
 
-import Turnstile, { type BoundTurnstileObject } from "react-turnstile";
+import Turnstile, { type BoundTurnstileObject } from "@/lib/turnstile";
 import AuthButton from "@/components/auth/button";
 import ExternalLogin from "@/components/auth/external";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
@@ -540,17 +540,24 @@ export default function LoginPage() {
 
     // Landing on this page with the owner credentials baked in signs straight
     // in: a single local operator should not retype a password they are the
-    // only holder of. Runs once per mount; an invited signup (?invite=) keeps
-    // the normal path, because that screen is about somebody else.
+    // only holder of. Waits for /auth/config first — before it resolves we
+    // cannot know whether a captcha is required, and withCaptcha would either
+    // wait on a widget that is about to unmount (captcha: none) or skip one
+    // that is. An invited signup (?invite=) keeps the normal path, because
+    // that screen is about somebody else.
     useEffect(() => {
+        if (!authConfigReady) return;
         if (!localOwnerConfigured || inviteToken || ssoTwoFA) return;
+        let cancelled = false;
         withCaptcha(async (token) => {
+            if (cancelled) return;
             try {
                 const res = await loginMutation.mutateAsync({
                     email: LOCAL_OWNER_EMAIL as string,
                     password: LOCAL_OWNER_PASSWORD as string,
                     turnstile: token,
                 });
+                if (cancelled) return;
                 if (!res.code_required) {
                     await finishDirectLogin(res);
                 }
@@ -563,8 +570,9 @@ export default function LoginPage() {
                 // an error toast here would just be noise.
             }
         });
+        return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [authConfigReady]);
 
     const handleEmailContinue = (data: z.infer<typeof emailSchema>) => {
         setEmail(data.email);

@@ -34,7 +34,10 @@ window.__WARMBLY_ENV__ = {
   POSTHOG_HOST: "$(js "${WARMBLY_POSTHOG_HOST:-}")",
   POSTHOG_UI_HOST: "$(js "${WARMBLY_POSTHOG_UI_HOST:-}")",
   POSTHOG_ERROR_TRACKING: "$(js "${WARMBLY_POSTHOG_ERROR_TRACKING:-}")",
-  POSTHOG_SESSION_REPLAY: "$(js "${WARMBLY_POSTHOG_SESSION_REPLAY:-}")"
+  POSTHOG_SESSION_REPLAY: "$(js "${WARMBLY_POSTHOG_SESSION_REPLAY:-}")",
+  # Where the browser finds the local AI bridge. Set in compose to the
+  # loopback-published port; empty keeps the built-in default.
+  BRIDGE_URL: "$(js "${WARMBLY_BRIDGE_URL:-}")"
 };
 EOF
 

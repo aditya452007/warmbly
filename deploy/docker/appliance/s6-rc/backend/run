@@ -1,0 +1,12 @@
+#!/command/with-contenv bash
+# Warmbly backend API. Waits for postgres to accept connections (the boot
+# oneshot only guarantees the cluster exists, not that it is listening), then
+# execs the API, which applies migrations on boot and provisions the owner
+# account while the users table is empty.
+set -e
+for i in $(seq 1 60); do
+    if pg_isready -h 127.0.0.1 -U warmbly -d warmbly_dev >/dev/null 2>&1; then break; fi
+    if [ "$i" = 60 ]; then echo "[backend] postgres never became ready" >&2; exit 1; fi
+    sleep 1
+done
+exec /app/backend

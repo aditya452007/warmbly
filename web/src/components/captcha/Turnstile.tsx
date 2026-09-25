@@ -1,5 +1,8 @@
 import { useEffect } from "react";
-import * as TurnstileObj from "react-turnstile";
+// Interop-safe accessor for react-turnstile under Vite 8 (see lib/turnstile.ts
+// for why the direct import hands back the CJS exports object instead of the
+// component).
+import { Turnstile as TurnstileWidget } from "@/lib/turnstile";
 import { TURNSTILE_KEY } from "@/lib/information";
 
 interface Props {
@@ -21,7 +24,7 @@ export default function Turnstile({setToken}: Props) {
     if (bypassToken || !TURNSTILE_KEY) return null;
 
     return <>
-        <TurnstileObj.default
+        <TurnstileWidget
             sitekey={TURNSTILE_KEY}
             onVerify={(token: string) => setToken(token)}
             onExpire={() => setToken("")}
