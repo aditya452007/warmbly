@@ -5,7 +5,10 @@
 set -e
 cd /app/bridge
 for i in $(seq 1 30); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' \
+    # Bounded probe: an unanswered OpenCode connection must never wedge the
+    # bridge (a hung curl here once held node down for 23+ minutes). Worst
+    # case the loop still ends at "starting anyway" after ~4 minutes.
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
         -u "opencode:${OPENCODE_SERVER_PASSWORD:-}" \
         http://127.0.0.1:4096/global/health || true)
     [ "$code" = "200" ] && break

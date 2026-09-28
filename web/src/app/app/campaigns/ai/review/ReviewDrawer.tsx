@@ -13,6 +13,7 @@ import {
     useApproveBridgeDraft,
     useBridgeDraft,
     useBridgePreview,
+    useDraftSends,
     useRegenerateBridgeDraft,
     useRejectBridgeDraft,
     useSaveBridgeDraft,
@@ -56,6 +57,8 @@ export default function ReviewDrawer({
     const [consent, setConsent] = React.useState(false);
 
     const draft = draftQuery.data?.draft;
+    const sendsQuery = useDraftSends(draft?.id ?? null, !!draft && draft.status === "APPROVED");
+    const sends = sendsQuery.data?.sends ?? [];
     const [subject, setSubject] = React.useState<string | null>(null);
     const [body, setBody] = React.useState<string | null>(null);
     React.useEffect(() => {
@@ -343,6 +346,39 @@ export default function ReviewDrawer({
                                                         Cancel
                                                     </TopbarAction>
                                                 </div>
+                                            </div>
+                                        )}
+                                    </section>
+                                )}
+                                {draft.status === "APPROVED" && (
+                                    <section>
+                                        <h3 className="text-[10px] uppercase tracking-[0.14em] text-slate-400 font-medium mb-1.5">
+                                            Send history
+                                        </h3>
+                                        {sendsQuery.isPending ? (
+                                            <p className="text-[12px] text-slate-500">Loading sends…</p>
+                                        ) : sendsQuery.isError ? (
+                                            <p className="text-[12px] text-slate-500">Couldn&apos;t load send history.</p>
+                                        ) : sends.length === 0 ? (
+                                            <p className="text-[12px] text-slate-500">No sends yet for this draft. A sent email appears here with its provider ID; it will not appear in Unibox.</p>
+                                        ) : (
+                                            <div className="divide-y divide-slate-200/60 rounded-md border border-slate-200">
+                                                {sends.map((s) => (
+                                                    <div key={s.id} className="px-3 py-1.5 text-[12px]">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-slate-900 font-medium truncate">{s.recipient}</span>
+                                                            <span className="text-[10px] uppercase tracking-[0.1em] text-slate-400 shrink-0">{s.status}</span>
+                                                        </div>
+                                                        <p className="font-mono text-[11px] text-slate-500 truncate" title={s.provider_message_id ?? ""}>
+                                                            {s.provider_message_id ?? s.provider}
+                                                        </p>
+                                                        {s.error_message && (
+                                                            <p className="text-[11.5px] text-red-600 truncate" title={s.error_message}>
+                                                                {s.error_message}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                ))}
                                             </div>
                                         )}
                                     </section>

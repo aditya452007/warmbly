@@ -14,9 +14,11 @@ import {
     getSendQueueMetrics,
     listBridgeDrafts,
     listBridgeRuns,
+    listDraftSends,
     listQueueReplies,
     listQueueResponses,
     listSendQueueFollowups,
+    listSendQueueItems,
     pauseSendQueue,
     pollQueueReplies,
     previewSendQueue,
@@ -91,6 +93,7 @@ function useInvalidateDrafts() {
         void queryClient.invalidateQueries({ queryKey: [KEY, "draft"] });
         void queryClient.invalidateQueries({ queryKey: [KEY, "preview"] });
         void queryClient.invalidateQueries({ queryKey: [KEY, "status"] });
+        void queryClient.invalidateQueries({ queryKey: [KEY, "draft-sends"] });
     };
 }
 
@@ -142,6 +145,7 @@ function useInvalidateQueue() {
         void queryClient.invalidateQueries({ queryKey: [KEY, "queue"] });
         void queryClient.invalidateQueries({ queryKey: [KEY, "queue-preview"] });
         void queryClient.invalidateQueries({ queryKey: [KEY, "queue-followups"] });
+        void queryClient.invalidateQueries({ queryKey: [KEY, "queue-items"] });
     };
 }
 
@@ -171,6 +175,26 @@ export function useSendQueueFollowups(runId: string | null) {
         queryKey: [KEY, "queue-followups", runId],
         queryFn: () => listSendQueueFollowups(runId as string),
         enabled: !!runId,
+        staleTime: 10_000,
+        retry: false,
+    });
+}
+
+export function useSendQueueItems(runId: string | null, enabled = true) {
+    return useQuery({
+        queryKey: [KEY, "queue-items", runId],
+        queryFn: () => listSendQueueItems(runId as string),
+        enabled: !!runId && enabled,
+        staleTime: 10_000,
+        retry: false,
+    });
+}
+
+export function useDraftSends(draftId: string | null, enabled = true) {
+    return useQuery({
+        queryKey: [KEY, "draft-sends", draftId],
+        queryFn: () => listDraftSends(draftId as string),
+        enabled: !!draftId && enabled,
         staleTime: 10_000,
         retry: false,
     });

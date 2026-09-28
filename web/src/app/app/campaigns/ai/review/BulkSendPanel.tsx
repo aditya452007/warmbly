@@ -15,6 +15,7 @@ import {
     useRejectFollowup,
     useResumeSendQueue,
     useSendQueueFollowups,
+    useSendQueueItems,
     useSendQueueMetrics,
     useSendQueuePreview,
     useStartSendQueue,
@@ -42,6 +43,8 @@ export default function BulkSendPanel({ runId }: { runId: string }) {
     const preview = previewQuery.data?.preview;
     const followupsQuery = useSendQueueFollowups(runId);
     const pendingFollowups = (followupsQuery.data?.followups ?? []).filter((f) => f.status === "NEEDS_REVIEW");
+    const itemsQuery = useSendQueueItems(runId, !!metrics && metrics.status !== "DRAFT");
+    const items = itemsQuery.data?.items ?? [];
 
     async function runMutation(fn: () => Promise<unknown>, ok: string) {
         try {
@@ -145,6 +148,11 @@ export default function BulkSendPanel({ runId }: { runId: string }) {
                             <Stat label="Remaining today" value={metrics.remaining_today} sub={`limit ${metrics.daily_limit}`} />
                             <Stat label="Blocked / failed" value={metrics.blocked + metrics.failed} sub={metrics.status} last />
                         </StatStrip>
+                        <div className="mx-5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                            <p className="text-[12px] text-amber-900 leading-relaxed">
+                                Bridge-direct sends go through Brevo, not your mailbox. They do not appear in Warmbly Unibox, Sent, or campaign progress. Warmbly counts native sends only, so the two totals disagree by design. Verify delivery below by provider ID and in Brevo.
+                            </p>
+                        </div>
                         {(metrics.status === "ACTIVE" || metrics.status === "PAUSED") && (
                             <div className="px-5 flex items-center gap-2">
                                 {metrics.status === "ACTIVE" ? (
@@ -183,6 +191,42 @@ export default function BulkSendPanel({ runId }: { runId: string }) {
                                 </span>
                             </div>
                         )}
+                        <div className="px-5 space-y-1.5">
+                            <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">
+                                Sent ledger ({items.length})
+                            </p>
+                            {itemsQuery.isPending ? (
+                                <p className="text-[12px] text-slate-500">Loading sends…</p>
+                            ) : itemsQuery.isError ? (
+                                <p className="text-[12px] text-slate-500">Couldn&apos;t load the send ledger.</p>
+                            ) : items.length === 0 ? (
+                                <p className="text-[12px] text-slate-500">No sends recorded yet. Approved drafts appear here with provider IDs once delivered.</p>
+                            ) : (
+                                <div className="divide-y divide-slate-200/60 rounded-md border border-slate-200">
+                                    {items.slice(0, 100).map((item) => (
+                                        <div key={item.id} className="px-3 py-1.5 flex items-center gap-3 text-[12px]">
+                                            <span className="text-slate-900 font-medium truncate max-w-[35%]">{item.recipient}</span>
+                                            <span className="text-slate-400 uppercase tracking-[0.1em] text-[10px] shrink-0">{item.status}</span>
+                                            <span className="font-mono text-[11px] text-slate-500 truncate" title={item.provider_message_id ?? ""}>
+                                                {item.provider_message_id ?? item.provider}
+                                            </span>
+                                            <span className="ml-auto text-[11px] text-slate-400 shrink-0">
+                                                {item.sent_at ? new Date(item.sent_at).toLocaleString() : ""}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            {items.some((item) => item.error_message) && (
+                                <div className="space-y-1">
+                                    {items.filter((item) => item.error_message).slice(0, 5).map((item) => (
+                                        <p key={item.id} className="text-[11.5px] text-red-600 truncate" title={item.error_message ?? ""}>
+                                            {item.recipient}: {item.error_message}
+                                        </p>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                         {pendingFollowups.length > 0 && (
                             <div className="px-5 space-y-1.5">
                                 <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Follow-ups awaiting approval</p>

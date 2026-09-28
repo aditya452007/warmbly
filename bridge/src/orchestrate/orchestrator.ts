@@ -6,7 +6,6 @@ import { DEFAULT_LANES, OpenCodeDiscoveryProvider, type Lane } from "../ai/disco
 import { buildPersonalizePrompt, buildResearchPrompt, promptVersion } from "../prompts/index.js";
 import {
   isHttpUrl,
-  escapeHtml,
   leadIdentity,
   normalizeDomain,
   normalizeEmail,
@@ -15,8 +14,7 @@ import {
   RunRequestSchema,
 } from "../domain/validate.js";
 import type { RunRequest } from "../domain/types.js";
-import { renderOutreach, OUTREACH_TEMPLATE_NAME, OUTREACH_TEMPLATE_VERSION } from "../email/render.js";
-import { AI_BODY_VAR } from "../email/template.js";
+import { renderOutreach, resolveDirectHtml, templateFor, OUTREACH_TEMPLATE_NAME, OUTREACH_TEMPLATE_VERSION, OUTREACH_TEMPLATE_V2_VERSION, OUTREACH_TEMPLATE_V3_VERSION } from "../email/render.js";
 import { log } from "../log.js";
 import {
   AgentRuns,
@@ -51,6 +49,10 @@ export interface OrchestratorDeps {
   warmbly: WarmblyClient;
   createRuntime?: (provider: string) => AgentRuntime;
   getEmailTransport?: () => EmailTransport | null;
+  // Optional run-to-inbox hook. Called when a run settles in a finished
+  // state; off when the deployment keeps human review between drafts and
+  // sending (the default).
+  autopilot?: { onRunFinished(runId: string): Promise<void> };
 }
 
 const HEARTBEAT_MS = 15_000;
@@ -86,6 +88,7 @@ export class BridgeOrchestrator {
   private readonly activeSessions = new Set<string>();
   private readonly activeJobs = new Set<string>();
   private shuttingDown = false;
+  private readonly autopilot: { onRunFinished(runId: string): Promise<void> } | null;
 
   constructor(deps: OrchestratorDeps) {
     this.config = deps.config;
@@ -99,6 +102,7 @@ export class BridgeOrchestrator {
     this.sends = deps.sends;
     this.warmbly = deps.warmbly;
     this.getEmailTransport = deps.getEmailTransport ?? (() => null);
+    this.autopilot = deps.autopilot ?? null;
     this.createRuntime =
       deps.createRuntime ??
       ((provider) =>
@@ -547,11 +551,15 @@ export class BridgeOrchestrator {
         (draftCounts.NEEDS_REVIEW ?? 0) + (draftCounts.RENDERED ?? 0) + (draftCounts.APPROVED ?? 0);
       // READY_FOR_REVIEW when drafts await humans; incomplete/failed leads
       // never count as ready on their own.
-      this.runs.setStatus(
-        runId,
-        terminalFails > 0 ? "PARTIALLY_COMPLETED" : reviewable > 0 ? "READY_FOR_REVIEW" : "COMPLETED",
-      );
+      const finalStatus =
+        terminalFails > 0 ? "PARTIALLY_COMPLETED" : reviewable > 0 ? "READY_FOR_REVIEW" : "COMPLETED";
+      this.runs.setStatus(runId, finalStatus);
       this.events.append({ kind: "campaign.completed", campaignRunId: runId, message: `synced=${counts.SYNCED_TO_WARMBLY ?? 0}` });
+      // Autopilot (when enabled) releases the run to sending here — drafts
+      // are final and contacts are already synced to the campaign.
+      if (this.autopilot && (finalStatus === "READY_FOR_REVIEW" || finalStatus === "PARTIALLY_COMPLETED")) {
+        void this.autopilot.onRunFinished(runId);
+      }
     } catch (err) {
       this.runs.setStatus(runId, "FAILED", (err instanceof Error ? err.message : String(err)).slice(0, 500));
     } finally {
@@ -683,15 +691,26 @@ export class BridgeOrchestrator {
     source: "ai" | "human",
   ): Promise<string | null> {
     const offers = run.offerUrls.slice(0, 3);
-    const rendered = await renderOutreach({ aiSubject: subject, aiBodyText: body, offers });
     const existing = this.drafts.getByLead(lead.id);
+    // New drafts take the current shell; edits keep their stored version so
+    // approved bytes never shift under review.
+    const template = templateFor(existing?.template_version ?? OUTREACH_TEMPLATE_V3_VERSION);
+    const rendered = await renderOutreach(
+      { aiSubject: subject, aiBodyText: body, offers, businessName: lead.business_name },
+      { template },
+    );
     this.drafts.upsert({
       id: existing?.id ?? randomUUID(),
       leadId: lead.id,
       subject: rendered.subject,
       body,
       templateName: OUTREACH_TEMPLATE_NAME,
-      templateVersion: OUTREACH_TEMPLATE_VERSION,
+      templateVersion:
+        template === "v3"
+          ? OUTREACH_TEMPLATE_V3_VERSION
+          : template === "v2"
+            ? OUTREACH_TEMPLATE_V2_VERSION
+            : OUTREACH_TEMPLATE_VERSION,
       renderedHtml: rendered.snapshot,
       offerSnapshot: [...run.offerUrls],
       status: DRAFT_STATUS.NEEDS_REVIEW,
@@ -976,7 +995,10 @@ export class BridgeOrchestrator {
       throw new Error(`invalid draft: ${parsed.error.issues[0]?.message ?? "rejected"}`);
     }
     const offers = run.offerUrls.slice(0, 3);
-    const rendered = await renderOutreach({ aiSubject: parsed.data.subject, aiBodyText: parsed.data.body, offers });
+    const rendered = await renderOutreach(
+      { aiSubject: parsed.data.subject, aiBodyText: parsed.data.body, offers, businessName: lead.business_name },
+      { template: templateFor(draft.template_version) },
+    );
     const saved = this.drafts.updateContent({
       id: draft.id,
       subject: rendered.subject,
@@ -1233,12 +1255,16 @@ export class BridgeOrchestrator {
     if (!transport || transport.name !== "brevo") {
       throw new SendRefused("config", "live sending requires EMAIL_PROVIDER=brevo");
     }
-    const rendered = await renderOutreach({ aiSubject: draft.subject, aiBodyText: draft.body, offers: run.offerUrls.slice(0, 3) });
+    const lead = this.leads.get(draft.lead_id);
+    const rendered = await renderOutreach(
+      { aiSubject: draft.subject, aiBodyText: draft.body, offers: run.offerUrls.slice(0, 3), businessName: lead?.business_name },
+      { template: templateFor(draft.template_version) },
+    );
     const from = typeof (transport as unknown as { defaultFrom?: () => { email: string; name?: string } }).defaultFrom === "function"
       ? (transport as unknown as { defaultFrom: () => { email: string; name?: string } }).defaultFrom()
       : { email: "" };
     if (!from.email) throw new SendRefused("config", "no approved sender address configured");
-    const html = rendered.stepHtml.split(AI_BODY_VAR).join(escapeHtml(draft.body));
+    const html = resolveDirectHtml(rendered.stepHtml, draft.body);
     const result = await transport.send({
       from,
       to: [{ email: recipient }],

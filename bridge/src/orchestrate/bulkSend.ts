@@ -3,7 +3,7 @@ import type { BridgeConfig } from "../config.js";
 import type { AgentRuntime } from "../ai/types.js";
 import type { BridgeDb } from "../db.js";
 import { OutreachSchema } from "../domain/validate.js";
-import { renderOutreach } from "../email/render.js";
+import { renderOutreach, resolveDirectHtml, templateFor } from "../email/render.js";
 import { AI_BODY_VAR } from "../email/template.js";
 import { escapeHtml } from "../domain/validate.js";
 import { log } from "../log.js";
@@ -747,7 +747,11 @@ export class BulkSender {
     }
     let rendered: { subject: string; stepHtml: string; snapshot: string };
     try {
-      rendered = await renderOutreach({ aiSubject: draft.subject, aiBodyText: draft.body, offers: runOffers });
+      const stored = this.deps.drafts.get(draft.id);
+      rendered = await renderOutreach(
+        { aiSubject: draft.subject, aiBodyText: draft.body, offers: runOffers, businessName: lead.business_name },
+        { template: templateFor(stored?.template_version) },
+      );
     } catch (err) {
       throw new GateError("SAFETY_BLOCK", `approved content no longer renders: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -785,7 +789,7 @@ export class BulkSender {
         if (!transport || transport.name !== "brevo") throw new GateError("CONFIGURATION", "live sending requires EMAIL_PROVIDER=brevo");
         const from = readDefaultFrom(transport);
         if (!from.email) throw new GateError("CONFIGURATION", "no approved sender address configured");
-        const html = rendered.stepHtml.split(AI_BODY_VAR).join(escapeHtml(draft.body));
+        const html = resolveDirectHtml(rendered.stepHtml, draft.body);
         const result = await transport.send({
           from,
           to: [{ email: recipient }],
@@ -798,7 +802,7 @@ export class BulkSender {
       }
       const direct = this.deps.getEmailTransport?.();
       if (direct && direct.name === "local") {
-        const html = rendered.stepHtml.split(AI_BODY_VAR).join(escapeHtml(draft.body));
+        const html = resolveDirectHtml(rendered.stepHtml, draft.body);
         const result = await direct.send({
           from: { email: "bridge@localhost", name: "Bridge" },
           to: [{ email: recipient }],
@@ -910,11 +914,16 @@ export class BulkSender {
     const runOffers = this.runOffers(queue.run_id);
     let rendered: { subject: string; stepHtml: string; snapshot: string };
     try {
-      rendered = await renderOutreach({ aiSubject: followup.subject, aiBodyText: followup.body, offers: runOffers });
+      const parent = this.deps.drafts.get(item.draft_id);
+      const followupLead = this.deps.leads.get(followup.lead_id);
+      rendered = await renderOutreach(
+        { aiSubject: followup.subject, aiBodyText: followup.body, offers: runOffers, businessName: followupLead?.business_name },
+        { template: templateFor(parent?.template_version) },
+      );
     } catch (err) {
       throw new GateError("SAFETY_BLOCK", `follow-up content no longer renders: ${err instanceof Error ? err.message : String(err)}`);
     }
-    const html = rendered.stepHtml.split(AI_BODY_VAR).join(escapeHtml(followup.body));
+    const html = resolveDirectHtml(rendered.stepHtml, followup.body);
     const subject = followup.subject.toLowerCase().startsWith("re:") ? followup.subject : `Re: ${followup.subject}`;
     const thread = await this.threadHeaders(queue, item);
     this.reserveSlot(queue);

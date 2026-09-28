@@ -235,6 +235,26 @@ export function listSendQueueFollowups(runId: string): Promise<{ followups: Brid
     return bridgeFetch(`/api/campaigns/${runId}/send-queue/followups?limit=200`);
 }
 
+export interface BridgeSendItem {
+    id: string;
+    draft_id: string;
+    draft_version: number;
+    recipient: string;
+    status: string;
+    provider: string;
+    provider_message_id: string | null;
+    sent_at: string | null;
+    error_message: string | null;
+}
+
+export function listSendQueueItems(runId: string, limit = 100): Promise<{ items: BridgeSendItem[] }> {
+    return bridgeFetch(`/api/campaigns/${runId}/send-queue/items?limit=${limit}`);
+}
+
+export function listDraftSends(draftId: string): Promise<{ sends: BridgeSend[] }> {
+    return bridgeFetch(`/api/drafts/${draftId}/sends`);
+}
+
 export function approveFollowup(followupId: string): Promise<{ followup: BridgeFollowup }> {
     return bridgeFetch(`/api/followups/${followupId}/approve`, { method: "POST" });
 }

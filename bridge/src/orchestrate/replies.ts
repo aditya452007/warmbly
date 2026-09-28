@@ -3,9 +3,7 @@ import type { BridgeConfig } from "../config.js";
 import type { BridgeDb } from "../db.js";
 import type { AgentRuntime } from "../ai/types.js";
 import { OutreachSchema, ReplyAnalysisSchema } from "../domain/validate.js";
-import { renderOutreach } from "../email/render.js";
-import { AI_BODY_VAR } from "../email/template.js";
-import { escapeHtml } from "../domain/validate.js";
+import { renderOutreach, resolveDirectHtml, templateFor } from "../email/render.js";
 import { log } from "../log.js";
 import type { CampaignRuns, Drafts, Events, Leads, Research, Sends } from "../store/repositories.js";
 import type { ContactSignals, DayCounters, FollowupDrafts, SendItems, SendQueues } from "../store/sendQueue.js";
@@ -645,8 +643,12 @@ export class ReplySync {
     const runOffers = this.runOffers(queue.run_id);
     let html: string;
     try {
-      const rendered = await renderOutreach({ aiSubject: row.subject, aiBodyText: row.body, offers: runOffers });
-      html = rendered.stepHtml.split(AI_BODY_VAR).join(escapeHtml(row.body));
+      const parent = this.deps.drafts.getByLead(row.lead_id);
+      const rendered = await renderOutreach(
+        { aiSubject: row.subject, aiBodyText: row.body, offers: runOffers, businessName: lead?.business_name },
+        { template: templateFor(parent?.template_version) },
+      );
+      html = resolveDirectHtml(rendered.stepHtml, row.body);
     } catch (err) {
       throw new Error(`response content no longer renders: ${err instanceof Error ? err.message : String(err)}`);
     }
